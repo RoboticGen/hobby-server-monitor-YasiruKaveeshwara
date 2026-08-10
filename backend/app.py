@@ -12,6 +12,7 @@ import falcon
 
 from backend.auth.middleware import AuthMiddleware
 from backend.config import config
+from backend.resources.accounting import AccountingResource
 from backend.resources.auth import (
     GoogleCallbackResource,
     GoogleLoginResource,
@@ -85,8 +86,9 @@ def create_app() -> falcon.App:
         "/api/containers/{container_id}/exec", ContainerExecResource()
     )
 
-    # Future routes (registered as their resource modules are built):
-    # Phase 13.1: /api/accounting
+    # accounting: host capacity vs allocated, plus per-user allocation vs
+    # quota. Degrades to DB-only figures when LXD is unreachable.
+    app.add_route("/api/accounting", AccountingResource())
 
     return app
 

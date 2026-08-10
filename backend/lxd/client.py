@@ -212,6 +212,93 @@ class LXDUnavailableError(Exception):
     """
 
 
+# ====================== Host Resources ======================================
+
+
+def _sum_cpu_threads(cpu_info: dict) -> float:
+    """Count total CPU threads from an LXD resources 'cpu' block.
+
+    LXD reports CPUs as sockets -> cores -> threads. We count threads
+    (not cores) because that is what container 'limits.cpu' values are
+    allocated against, so host capacity and allocation use the same unit.
+    Newer LXD versions also expose a flat 'total'; we prefer the explicit
+    walk and fall back to 'total' when the nested shape is missing.
+    """
+    total = 0
+    for socket in cpu_info.get("sockets") or []:
+        for core in socket.get("cores") or []:
+            threads = core.get("threads")
+            total += len(threads) if threads else 1
+    if total == 0:
+        total = int(cpu_info.get("total") or 0)
+    return float(total)
+
+
+def _sum_storage(storage_info: dict) -> tuple[float, float]:
+    """Return (total_gb, used_gb) from an LXD resources 'storage' block.
+
+    LXD has reported storage under two different shapes across versions
+    ('pools' with space_total/space_used, and 'disks' with size), so both
+    are handled here rather than assuming one. Anything unrecognized
+    yields 0.0 instead of raising — a missing disk figure should not take
+    down the whole accounting endpoint.
+    """
+    gb = 1024 * 1024 * 1024
+    total = 0.0
+    used = 0.0
+
+    for pool in storage_info.get("pools") or []:
+        total += float(pool.get("space_total") or 0) / gb
+        used += float(pool.get("space_used") or 0) / gb
+
+    # Older/alternate shape: physical disks, which report size but no usage.
+    if total == 0.0:
+        for disk in storage_info.get("disks") or []:
+            total += float(disk.get("size") or 0) / gb
+
+    return (total, used)
+
+
+def get_host_resources() -> dict:
+    """Return the host's total CPU/RAM/disk capacity as reported by LXD.
+
+    This is the "what the machine physically has" half of the accounting
+    endpoint; the "what we've handed out" half comes from the DB. Values
+    are normalized to the same units the rest of the app uses (MB for
+    RAM, GB for disk, threads for CPU) so the caller can compare host
+    capacity against allocation without converting anything.
+
+    Raises LXDUnavailableError if LXD is unreachable or does not support
+    the resources API extension. Callers are expected to catch this and
+    degrade (decision 7.10) rather than fail the whole request — host
+    capacity is the only part of accounting that needs LXD at all.
+    """
+    try:
+        client = _get_client()
+        resources = client.resources
+    except Exception as exc:
+        raise LXDUnavailableError(
+            f"Cannot read host resources from LXD: {exc}"
+        ) from exc
+
+    cpu_cores = _sum_cpu_threads(resources.get("cpu") or {})
+
+    memory = resources.get("memory") or {}
+    mb = 1024 * 1024
+    ram_total_mb = float(memory.get("total") or 0) / mb
+    ram_used_mb = float(memory.get("used") or 0) / mb
+
+    disk_total_gb, disk_used_gb = _sum_storage(resources.get("storage") or {})
+
+    return {
+        "cpu_cores": cpu_cores,
+        "ram_total_mb": ram_total_mb,
+        "ram_used_mb": ram_used_mb,
+        "disk_total_gb": disk_total_gb,
+        "disk_used_gb": disk_used_gb,
+    }
+
+
 # ====================== Metrics State =======================================
 
 
