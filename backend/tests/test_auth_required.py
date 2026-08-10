@@ -155,8 +155,8 @@ from backend.app import create_app
 # Format: (HTTP_METHOD, path)
 # -------------------------------------------------------------------
 PROTECTED_ROUTES: list[tuple[str, str]] = [
-    # Phase 7.1:  ("GET", "/api/containers"),
-    # Phase 7.1:  ("POST", "/api/containers"),
+    ("GET", "/api/containers"),
+    ("POST", "/api/containers"),
     # Phase 7.2:  ("PATCH", "/api/containers/{id}"),
     # Phase 7.2:  ("DELETE", "/api/containers/{id}"),
     # Phase 8.1:  ("GET", "/api/users"),
