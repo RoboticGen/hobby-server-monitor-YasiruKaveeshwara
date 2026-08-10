@@ -1,2 +1,29 @@
-
+#Documentation 
 docs/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Database files
+*.db
+*.sqlite
+
+# TinyFlux data
+tinyflux_data/
+data/
+
+# Environment secrets (never commit the real .env)
+.env
+
+# Node / Frontend
+node_modules/
+dist/
+.astro/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
