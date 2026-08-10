@@ -28,6 +28,7 @@ from backend.resources.metrics import (
     ContainerHistoryResource,
     LatestMetricsResource,
 )
+from backend.resources.terminal import ContainerExecResource
 from backend.resources.users import UserDetailResource, UserListResource
 
 
@@ -78,8 +79,13 @@ def create_app() -> falcon.App:
         "/api/containers/{container_id}/history", ContainerHistoryResource()
     )
 
+    # terminal: run one command inside a container (injection-safe, audited).
+    # Available to any user with an active assignment, not just admins.
+    app.add_route(
+        "/api/containers/{container_id}/exec", ContainerExecResource()
+    )
+
     # Future routes (registered as their resource modules are built):
-    # Phase 12.1: /api/containers/{id}/exec
     # Phase 13.1: /api/accounting
 
     return app
