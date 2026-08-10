@@ -163,9 +163,12 @@ class ContainerListResource:
         try:
             lxd_client.create_container(name, image, lxd_limits)
         except Exception as e:
-            raise falcon.HTTPInternalServerError(
-                title="Container creation failed",
-                description=f"LXD error: {e}",
+            # LXD being unreachable is a service availability issue, not a code bug. Return 503
+            # with a clear message so the frontend can show a retry
+            # prompt, rather than a generic 500 that looks like a crash.
+            raise falcon.HTTPServiceUnavailable(
+                title="LXD unreachable",
+                description=f"Cannot create container — LXD error: {e}",
             )
 
         # Record the container in our database with cached limits
@@ -268,9 +271,11 @@ class ContainerDetailResource:
                     container["lxd_name"], action
                 )
             except Exception as e:
-                raise falcon.HTTPInternalServerError(
-                    title="State change failed",
-                    description=f"LXD error: {e}",
+                # 503, not 500, when LXD is unreachable — a clean, documented failure rather
+                # than a raw stack trace.
+                raise falcon.HTTPServiceUnavailable(
+                    title="LXD unreachable",
+                    description=f"Cannot change state — LXD error: {e}",
                 )
 
             # Audit log: every state change leaves a trail so admins can
@@ -328,9 +333,11 @@ class ContainerDetailResource:
                 container["lxd_name"], lxd_limits
             )
         except Exception as e:
-            raise falcon.HTTPInternalServerError(
-                title="Limit update failed",
-                description=f"LXD error: {e}",
+            # Decision 7.10 / Phase 14.2: 503 so the frontend gets a
+            # clean, retryable failure — not a generic 500.
+            raise falcon.HTTPServiceUnavailable(
+                title="LXD unreachable",
+                description=f"Cannot update limits — LXD error: {e}",
             )
 
         # Update the DB cache to keep it in sync with LXD
@@ -381,9 +388,10 @@ class ContainerDetailResource:
         try:
             lxd_client.delete_container(container["lxd_name"])
         except Exception as e:
-            raise falcon.HTTPInternalServerError(
-                title="Container deletion failed",
-                description=f"LXD error: {e}",
+            # Clear 503 so the admin sees "LXD is down, try again later" rather than a confusing 500.
+            raise falcon.HTTPServiceUnavailable(
+                title="LXD unreachable",
+                description=f"Cannot delete container — LXD error: {e}",
             )
 
         # Soft-delete in DB — the row stays so audit log entries and
