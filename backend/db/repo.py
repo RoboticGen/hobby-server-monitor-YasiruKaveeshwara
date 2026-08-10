@@ -214,22 +214,32 @@ def delete_session(session_id: str) -> None:
 
 
 def create_container_record(
-    lxd_name: str, image: str, created_by: str
+    lxd_name: str,
+    image: str,
+    created_by: str,
+    limit_ram_mb: int = 0,
+    limit_cpu: float = 0.0,
+    limit_disk_gb: int = 0,
 ) -> str:
     """Insert a new container row and return its generated UUID.
 
     This records the container in our database; the actual LXD container
-    creation happens separately via lxd/client.py.
+    creation happens separately via lxd/client.py. The limit_* params
+    are cached here so quota calculations can read them from the DB
+    without needing a live LXD call.
     """
     container_id = str(uuid.uuid4())
     conn = get_connection()
     try:
         conn.execute(
             """
-            INSERT INTO containers (id, lxd_name, image, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO containers (id, lxd_name, image, created_by,
+                                    limit_ram_mb, limit_cpu, limit_disk_gb,
+                                    created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (container_id, lxd_name, image, created_by, _now_iso()),
+            (container_id, lxd_name, image, created_by,
+             limit_ram_mb, limit_cpu, limit_disk_gb, _now_iso()),
         )
         conn.commit()
     finally:

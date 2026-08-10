@@ -35,12 +35,15 @@ CREATE TABLE sessions (
 -- which can change via rename). Soft-deleted via deleted_at so historical
 -- metrics and audit entries remain queryable.
 CREATE TABLE containers (
-    id           TEXT PRIMARY KEY,        -- our uuid, stable across renames
-    lxd_name     TEXT UNIQUE NOT NULL,    -- current LXD-side name
-    image        TEXT NOT NULL,
-    created_by   TEXT NOT NULL REFERENCES users(id),
-    deleted_at   TEXT,                    -- soft delete, NULL = active
-    created_at   TEXT NOT NULL
+    id            TEXT PRIMARY KEY,        -- our uuid, stable across renames
+    lxd_name      TEXT UNIQUE NOT NULL,    -- current LXD-side name
+    image         TEXT NOT NULL,
+    created_by    TEXT NOT NULL REFERENCES users(id),
+    limit_ram_mb  INTEGER NOT NULL DEFAULT 0,  -- DB-cached RAM limit in MB
+    limit_cpu     REAL    NOT NULL DEFAULT 0,  -- DB-cached CPU core count
+    limit_disk_gb INTEGER NOT NULL DEFAULT 0,  -- DB-cached disk limit in GB
+    deleted_at    TEXT,                    -- soft delete, NULL = active
+    created_at    TEXT NOT NULL
 );
 
 -- Assignments table: maps users to containers they are allowed to access.
