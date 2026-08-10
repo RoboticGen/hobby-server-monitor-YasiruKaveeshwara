@@ -8,7 +8,7 @@ explicit requirement that access changes leave a trail.
 Quota is checked at grant time using the container's DB-cached limits.
 Revoke is always allowed — removing access never exceeds any quota.
 
-Design decision (from brief): requesting an unassigned container by
+Requesting an unassigned container by
 ID must return 403, not 404, so an attacker cannot enumerate container
 IDs by probing for 404 vs 403 responses.
 """
@@ -122,7 +122,7 @@ class AssignmentResource:
 
         Sets the assignment row to active=0 (soft-delete) so the access
         history is preserved. Does NOT hard-delete the row — matching
-        Step 4.4's decision to keep assignment history for audit trails.
+        keep assignment history for audit trails.
         """
         require_role(req, "admin")
 
@@ -173,7 +173,7 @@ class AssignmentResource:
 class ContainerDetailByUserResource:
     """GET a single container by ID, enforcing assignment-based access.
 
-    Design decision (from brief): requesting an unassigned container by
+    Requesting an unassigned container by
     ID must return 403, NOT 404. Returning 404 would allow an attacker
     to enumerate valid container IDs by probing for the different
     response codes. 403 reveals nothing about whether the container

@@ -40,7 +40,7 @@ class Config:
     jwt_secret: str
 
     # Admin bootstrap — the one email that becomes Admin on first sign-in
-    # (decision 7.11: explicit env var prevents "first visitor wins" race)
+    # (explicit env var prevents "first visitor wins" race)
     admin_bootstrap_email: str
 
     # Storage paths

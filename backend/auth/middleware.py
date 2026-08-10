@@ -89,7 +89,7 @@ def require_role(req: falcon.Request, role: str) -> None:
 # container on EVERY call — the result is never cached. This is critical
 # for the terminal exec endpoint (Phase 12): if an admin revokes a user's
 # access mid-session, the very next exec call must be rejected, not served
-# from a stale cached "yes they had access a minute ago" decision.
+# from a stale cached "yes they had access a minute ago".
 def require_container_access(
     req: falcon.Request, container_id: str
 ) -> None:

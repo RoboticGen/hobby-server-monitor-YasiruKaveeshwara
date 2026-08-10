@@ -57,7 +57,7 @@ def check_quota(
     Returns (True, "") if the addition is within the user's limits.
     Returns (False, "<specific reason>") if it would exceed quota,
     naming the exact resource and how much it would be exceeded by
-    (decision 7.3: a hard block with the specific number, not a vague
+    (hard block with the specific number, not a vague
     rejection, so the admin can see exactly what to adjust).
     """
     user = repo.get_user_by_id(user_id)

@@ -47,8 +47,8 @@ class UserListResource:
             "quota_disk_gb": 20
         }
 
-        The invited user does NOT receive an email (decision 7.11: only
-        Google OAuth is used for authentication — the invited user simply
+        The invited user does NOT receive an email 
+        (only Google OAuth is used for authentication — the invited user simply
         needs to sign in with their Google account using the same email
         address, and the OAuth callback will recognize them and upgrade
         their status from 'invited' to 'active' on first login).

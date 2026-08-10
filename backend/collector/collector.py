@@ -20,7 +20,9 @@ Run this process with:
 
 import logging
 import time
+from datetime import datetime, timezone
 
+from backend.collector.retention import run_retention_pass
 from backend.config import config
 from backend.db import repo
 from backend.lxd import client as lxd_client
@@ -54,7 +56,6 @@ def _collect_one(container: dict) -> None:
 def run_collector_loop() -> None:
     """Main collection loop — runs forever until the process is killed.
 
-    Design decisions:
     - Sleeps COLLECTOR_INTERVAL_SECONDS between iterations (not between
       containers) so all containers in one iteration share the same
       approximate timestamp window.
@@ -64,11 +65,20 @@ def run_collector_loop() -> None:
     - Uses LXDUnavailableError for LXD-specific failures and a broad
       Exception catch for any other unexpected error (e.g., DB read
       failure) — both are warned about, not raised.
+    - Retention/downsampling runs once per hour using an
+      in-memory timestamp. This does not need to survive a restart — the
+      worst case on restart is running retention slightly earlier than one
+      hour after the last run, which is safe. It is NOT a second process.
     """
     log.info(
         "Collector starting. Interval: %ds",
         config.collector_interval_seconds,
     )
+
+    # In-memory tracking of the last retention run time.
+    # Simple datetime comparison — does not need to survive a restart.
+    _last_retention_run: datetime | None = None
+    _retention_interval_seconds = 3600  # 1 hour in wall-clock time
 
     while True:
         containers = repo.list_active_containers()
@@ -101,6 +111,20 @@ def run_collector_loop() -> None:
                     container["lxd_name"],
                     exc,
                 )
+
+        # Hourly retention tick.
+        # Runs within the same loop, not a second process.
+        now = datetime.now(tz=timezone.utc)
+        if (
+            _last_retention_run is None
+            or (now - _last_retention_run).total_seconds() >= _retention_interval_seconds
+        ):
+            try:
+                log.info("Running hourly retention pass")
+                run_retention_pass(now=now)
+                _last_retention_run = now
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Retention pass error: %s — will retry next hour", exc)
 
         time.sleep(config.collector_interval_seconds)
 

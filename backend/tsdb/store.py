@@ -47,6 +47,7 @@ def write_point(
     container_id: str,
     fields: dict,
     resolution: str = "raw",
+    timestamp: datetime | None = None,
 ) -> None:
     """Write a single data point for a container.
 
@@ -59,10 +60,13 @@ def write_point(
         fields: Flat dict of metric values (e.g. cpu_pct, ram_mb, …).
         resolution: Granularity tag — "raw" for live collector points,
                     "5m" for 5-minute averages, "1h" for hourly averages.
+        timestamp: Optional explicit UTC datetime for the point. Defaults
+                   to the current UTC time. Provided so the retention test
+                   can insert synthetically old points without sleeping.
     """
     store = get_store()
     point = Point(
-        time=datetime.now(tz=timezone.utc),
+        time=timestamp if timestamp is not None else datetime.now(tz=timezone.utc),
         tags={"container_id": container_id, "resolution": resolution},
         fields=fields,
     )
