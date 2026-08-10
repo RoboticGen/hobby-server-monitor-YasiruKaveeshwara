@@ -208,3 +208,216 @@ def delete_session(session_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# =========================== Containers =====================================
+
+
+def create_container_record(
+    lxd_name: str, image: str, created_by: str
+) -> str:
+    """Insert a new container row and return its generated UUID.
+
+    This records the container in our database; the actual LXD container
+    creation happens separately via lxd/client.py.
+    """
+    container_id = str(uuid.uuid4())
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO containers (id, lxd_name, image, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (container_id, lxd_name, image, created_by, _now_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return container_id
+
+
+def get_container_by_id(container_id: str) -> dict | None:
+    """Look up a container by its internal UUID."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM containers WHERE id = ?", (container_id,)
+        ).fetchone()
+        return _row_to_dict(row)
+    finally:
+        conn.close()
+
+
+def get_container_by_lxd_name(lxd_name: str) -> dict | None:
+    """Look up a container by its current LXD-side name."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM containers WHERE lxd_name = ?", (lxd_name,)
+        ).fetchone()
+        return _row_to_dict(row)
+    finally:
+        conn.close()
+
+
+def list_active_containers() -> list[dict]:
+    """Return all containers that have not been soft-deleted."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM containers WHERE deleted_at IS NULL "
+            "ORDER BY created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def rename_container_lxd_name(
+    container_id: str, new_lxd_name: str
+) -> None:
+    """Update the LXD-side name on an existing container record.
+
+    The internal UUID stays the same, so all assignments, metrics, and
+    audit entries continue to reference the correct container.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE containers SET lxd_name = ? WHERE id = ?",
+            (new_lxd_name, container_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# soft_delete_container does NOT hard-delete the row. The container record
+# must survive deletion so that:
+#   1. Audit log entries referencing this container remain valid.
+#   2. TinyFlux metric history keyed by this container's UUID stays
+#      queryable for historical reporting.
+#   3. Assignment rows (also soft-deactivated) retain their meaning.
+def soft_delete_container(container_id: str) -> None:
+    """Mark a container as deleted by setting its deleted_at timestamp.
+
+    Does not remove the row — audit history and TinyFlux metric data
+    reference this container's UUID and must remain queryable.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE containers SET deleted_at = ? WHERE id = ?",
+            (_now_iso(), container_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# =========================== Assignments ====================================
+
+
+def assign_container(user_id: str, container_id: str) -> str:
+    """Grant a user access to a container and return the assignment UUID."""
+    assignment_id = str(uuid.uuid4())
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO assignments (id, user_id, container_id, active,
+                                     created_at)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (assignment_id, user_id, container_id, _now_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return assignment_id
+
+
+# revoke_assignment sets active=0 rather than deleting the row. This
+# preserves the full grant/revoke history for audit purposes — an admin
+# can see that user X was granted access on date A and revoked on date B,
+# rather than the row simply vanishing.
+def revoke_assignment(user_id: str, container_id: str) -> None:
+    """Revoke a user's access to a container by deactivating the assignment.
+
+    Sets active=0 on the matching row rather than deleting it, so the
+    grant/revoke history is preserved for auditing.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE assignments SET active = 0 "
+            "WHERE user_id = ? AND container_id = ? AND active = 1",
+            (user_id, container_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_assignments_for_user(user_id: str) -> list[dict]:
+    """Return all active assignments for a given user."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM assignments WHERE user_id = ? AND active = 1 "
+            "ORDER BY created_at",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def user_has_access(user_id: str, container_id: str) -> bool:
+    """Check whether a user has an active assignment to a container.
+
+    Returns True only if there is at least one active assignment row
+    linking this user to this container.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM assignments "
+            "WHERE user_id = ? AND container_id = ? AND active = 1",
+            (user_id, container_id),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+# ============================= Audit Log ====================================
+
+
+def write_audit_log(
+    user_id: str,
+    action: str,
+    target: str | None,
+    detail: str | None,
+) -> None:
+    """Append an entry to the immutable audit log.
+
+    This table is insert-only — entries are never updated or deleted.
+    Every destructive or limit-changing action should write here so
+    admins have a full trail of who did what and when.
+    """
+    entry_id = str(uuid.uuid4())
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO audit_log (id, user_id, action, target, detail,
+                                   created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (entry_id, user_id, action, target, detail, _now_iso()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
