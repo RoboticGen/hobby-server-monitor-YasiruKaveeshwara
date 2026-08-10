@@ -133,3 +133,94 @@ class TestRefreshToken:
         h = hash_refresh_token("test-token-value")
         assert len(h) == 64
         assert all(c in "0123456789abcdef" for c in h)
+
+
+# =========================================================================
+# "Every route requires auth" integration test
+#
+# This test maintains an explicit list of every protected route in the
+# application and asserts that each one returns 401 when called without
+# an authentication cookie. The list must be updated every time a new
+# protected route is added in a later phase — that upkeep IS the defense
+# against accidentally shipping an unprotected endpoint.
+# =========================================================================
+
+from falcon import testing
+
+from backend.app import create_app
+
+# -------------------------------------------------------------------
+# PROTECTED ROUTES: every auth-required route in the app.
+# Add new entries here as they are registered in later phases.
+# Format: (HTTP_METHOD, path)
+# -------------------------------------------------------------------
+PROTECTED_ROUTES: list[tuple[str, str]] = [
+    # Phase 7.1:  ("GET", "/api/containers"),
+    # Phase 7.1:  ("POST", "/api/containers"),
+    # Phase 7.2:  ("PATCH", "/api/containers/{id}"),
+    # Phase 7.2:  ("DELETE", "/api/containers/{id}"),
+    # Phase 8.1:  ("GET", "/api/users"),
+    # Phase 8.1:  ("POST", "/api/users"),
+    # Phase 11.1: ("GET", "/api/metrics/latest"),
+    # Phase 12.1: ("POST", "/api/containers/{id}/exec"),
+    # Phase 13.1: ("GET", "/api/accounting"),
+]
+
+# -------------------------------------------------------------------
+# PUBLIC ROUTES: routes that intentionally work without auth.
+# These should NOT return 401 when called without a cookie.
+# Format: (HTTP_METHOD, path)
+# -------------------------------------------------------------------
+PUBLIC_ROUTES: list[tuple[str, str]] = [
+    ("GET", "/health"),
+    ("GET", "/api/auth/google/login"),
+    # callback and me are special cases tested separately
+]
+
+
+class TestEveryRouteRequiresAuth:
+    """Integration test ensuring no protected route is left open.
+
+    Uses Falcon's TestClient to simulate requests without any auth
+    cookies and asserts that every protected route returns 401.
+    """
+
+    def _get_client(self) -> testing.TestClient:
+        """Create a fresh Falcon test client for each test."""
+        return testing.TestClient(create_app())
+
+    def test_protected_routes_return_401_without_auth(self):
+        """Every route in PROTECTED_ROUTES must return 401 without a cookie."""
+        client = self._get_client()
+
+        for method, path in PROTECTED_ROUTES:
+            simulate = getattr(client, f"simulate_{method.lower()}")
+            result = simulate(path)
+            assert result.status_code == 401, (
+                f"{method} {path} returned {result.status_code}, "
+                f"expected 401 (unauthenticated)"
+            )
+
+    def test_public_routes_do_not_return_401(self):
+        """Public routes must NOT return 401 without a cookie."""
+        client = self._get_client()
+
+        for method, path in PUBLIC_ROUTES:
+            simulate = getattr(client, f"simulate_{method.lower()}")
+            result = simulate(path)
+            assert result.status_code != 401, (
+                f"{method} {path} returned 401 but is supposed to be public"
+            )
+
+    def test_me_returns_401_without_auth(self):
+        """GET /api/auth/me specifically must return 401 without a cookie."""
+        client = self._get_client()
+        result = client.simulate_get("/api/auth/me")
+        assert result.status_code == 401
+
+    def test_logout_succeeds_without_auth(self):
+        """POST /api/auth/logout should succeed even without a cookie
+        (idempotent — logging out when not logged in is not an error)."""
+        client = self._get_client()
+        result = client.simulate_post("/api/auth/logout")
+        assert result.status_code == 200

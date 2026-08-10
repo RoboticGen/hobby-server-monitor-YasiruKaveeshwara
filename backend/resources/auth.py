@@ -71,8 +71,8 @@ def _set_session_cookies(
 
 def _clear_session_cookies(resp: falcon.Response) -> None:
     """Remove both session cookies by setting them to expire immediately."""
-    resp.unset_cookie(_ACCESS_COOKIE, samesite="Lax")
-    resp.unset_cookie(_REFRESH_COOKIE, samesite="Lax")
+    resp.unset_cookie(_ACCESS_COOKIE, same_site="Lax")
+    resp.unset_cookie(_REFRESH_COOKIE, same_site="Lax")
 
 
 class GoogleLoginResource:

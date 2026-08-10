@@ -10,6 +10,7 @@ from wsgiref.simple_server import make_server
 
 import falcon
 
+from backend.auth.middleware import AuthMiddleware
 from backend.config import config
 from backend.resources.auth import (
     GoogleCallbackResource,
@@ -27,7 +28,11 @@ def create_app() -> falcon.App:
     Returns the configured app instance, ready to be served by any WSGI
     server (wsgiref for dev, waitress for production).
     """
-    app = falcon.App()
+    # AuthMiddleware decodes the JWT cookie and sets req.context.user
+    # on every request. It does NOT reject unauthenticated requests —
+    # individual resource methods call require_role() or
+    # require_container_access() to enforce their own requirements.
+    app = falcon.App(middleware=[AuthMiddleware()])
 
     # --- Route registration ------------------------------------------
     # Each route is added in the phase that builds its resource class.
