@@ -23,6 +23,7 @@ from backend.resources.containers import (
     ContainerListResource,
 )
 from backend.resources.health import HealthResource
+from backend.resources.users import UserDetailResource, UserListResource
 
 
 def create_app() -> falcon.App:
@@ -56,8 +57,11 @@ def create_app() -> falcon.App:
     # container detail (update/delete)
     app.add_route("/api/containers/{container_id}", ContainerDetailResource())
 
+    # user management
+    app.add_route("/api/users", UserListResource())
+    app.add_route("/api/users/{user_id}", UserDetailResource())
+
     # Future routes (registered as their resource modules are built):
-    # Phase 8.1:  /api/users
     # Phase 11.1: /api/metrics/*
     # Phase 12.1: /api/containers/{id}/exec
     # Phase 13.1: /api/accounting
