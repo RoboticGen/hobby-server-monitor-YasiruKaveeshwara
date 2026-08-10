@@ -155,7 +155,8 @@ PROTECTED_ROUTES: list[tuple[str, str]] = [
     ("PATCH", "/api/users/nonexistent-id"),
     ("POST", "/api/users/nonexistent-uid/containers/nonexistent-cid"),
     ("DELETE", "/api/users/nonexistent-uid/containers/nonexistent-cid"),
-    # Phase 11.1: ("GET", "/api/metrics/latest"),
+    ("GET", "/api/metrics/latest"),
+    ("GET", "/api/containers/nonexistent-id/history"),
     # Phase 12.1: ("POST", "/api/containers/{id}/exec"),
     # Phase 13.1: ("GET", "/api/accounting"),
 ]

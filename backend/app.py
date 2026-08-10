@@ -24,6 +24,10 @@ from backend.resources.assignments import (
 )
 from backend.resources.containers import ContainerListResource
 from backend.resources.health import HealthResource
+from backend.resources.metrics import (
+    ContainerHistoryResource,
+    LatestMetricsResource,
+)
 from backend.resources.users import UserDetailResource, UserListResource
 
 
@@ -67,8 +71,14 @@ def create_app() -> falcon.App:
     )
     app.add_route("/api/containers/{container_id}", ContainerDetailByUserResource())
 
+    # metrics: latest (dashboard polling target) + per-container history.
+    # Both read from TinyFlux only, never LXD.
+    app.add_route("/api/metrics/latest", LatestMetricsResource())
+    app.add_route(
+        "/api/containers/{container_id}/history", ContainerHistoryResource()
+    )
+
     # Future routes (registered as their resource modules are built):
-    # Phase 11.1: /api/metrics/*
     # Phase 12.1: /api/containers/{id}/exec
     # Phase 13.1: /api/accounting
 
