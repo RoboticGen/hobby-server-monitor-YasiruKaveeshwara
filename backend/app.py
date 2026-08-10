@@ -11,22 +11,24 @@ from wsgiref.simple_server import make_server
 import falcon
 
 from backend.config import config
+from backend.resources.health import HealthResource
 
 
 def create_app() -> falcon.App:
     """Create and configure the Falcon WSGI application.
 
     Constructs a falcon.App instance and registers all route resources.
-    No routes are registered yet — they will be added in subsequent phases
-    as each resource module is built.
-
     Returns the configured app instance, ready to be served by any WSGI
     server (wsgiref for dev, waitress for production).
     """
     app = falcon.App()
 
-    # Routes will be registered here as they are built in later phases:
-    # Phase 3.2:  GET  /health
+    # --- Route registration ------------------------------------------
+    # Each route is added in the phase that builds its resource class.
+    # Phase 3.2 — health check (stub, extended in Phase 14)
+    app.add_route("/health", HealthResource())
+
+    # Future routes (registered as their resource modules are built):
     # Phase 5.3:  /api/auth/* routes
     # Phase 7.1:  /api/containers
     # Phase 8.1:  /api/users
