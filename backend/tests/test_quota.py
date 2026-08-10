@@ -7,30 +7,10 @@ small additions and rejects ones that would exceed the quota, with
 messages naming the specific resource exceeded.
 """
 
-import os
-import tempfile
-
 import pytest
 
-# Override DATABASE_PATH before importing backend modules
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["DATABASE_PATH"] = _tmp.name
-
-from backend.db.init_db import init_db
 from backend.db import repo
 from backend.lxd.quota import check_quota, compute_user_allocation
-
-
-@pytest.fixture(autouse=True, scope="module")
-def setup_db():
-    """Create the schema in a temp database once for the whole module."""
-    if os.path.exists(_tmp.name):
-        os.remove(_tmp.name)
-    init_db(_tmp.name)
-    yield
-    if os.path.exists(_tmp.name):
-        os.remove(_tmp.name)
 
 
 class TestQuotaCalculation:

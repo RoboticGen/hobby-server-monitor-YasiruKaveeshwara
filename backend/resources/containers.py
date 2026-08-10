@@ -199,3 +199,207 @@ class ContainerListResource:
             "image": image,
             "limits": {"ram_mb": ram_mb, "cpu": cpu, "disk_gb": disk_gb},
         }
+
+
+# Valid state actions accepted by the PATCH endpoint
+_VALID_STATE_ACTIONS = {"start", "stop", "restart", "freeze", "unfreeze"}
+
+
+class ContainerDetailResource:
+    """Handles PATCH (state/limits update) and DELETE for a single container.
+
+    Both operations are admin-only and both write an audit log entry —
+    the project brief explicitly requires that "destructive and
+    limit-changing actions leave a trail" for admin accountability.
+    """
+
+    def on_patch(
+        self,
+        req: falcon.Request,
+        resp: falcon.Response,
+        container_id: str,
+    ) -> None:
+        """Update a container's state or resource limits (admin only).
+
+        Expected JSON body — one of:
+        State change:  {"action": "start"|"stop"|"restart"|"freeze"|"unfreeze"}
+        Limit change:  {"limits": {"ram_mb": 2048, "cpu": 2.0, "disk_gb": 20}}
+        """
+        require_role(req, "admin")
+
+        container = repo.get_container_by_id(container_id)
+        if not container:
+            raise falcon.HTTPNotFound(
+                title="Container not found",
+                description=f"No container with id '{container_id}'.",
+            )
+        if container["deleted_at"] is not None:
+            raise falcon.HTTPGone(
+                title="Container deleted",
+                description="This container has been deleted.",
+            )
+
+        body = req.get_media()
+        action = body.get("action")
+        limits = body.get("limits")
+
+        if action and limits:
+            raise falcon.HTTPBadRequest(
+                title="Ambiguous request",
+                description="Provide either 'action' or 'limits', not both.",
+            )
+        if not action and not limits:
+            raise falcon.HTTPBadRequest(
+                title="Nothing to do",
+                description="Provide 'action' (state change) or 'limits' "
+                "(resource update).",
+            )
+
+        # --- State change ---
+        if action:
+            if action not in _VALID_STATE_ACTIONS:
+                raise falcon.HTTPBadRequest(
+                    title="Invalid action",
+                    description=f"Action must be one of: "
+                    f"{sorted(_VALID_STATE_ACTIONS)}.",
+                )
+            try:
+                lxd_client.change_container_state(
+                    container["lxd_name"], action
+                )
+            except Exception as e:
+                raise falcon.HTTPInternalServerError(
+                    title="State change failed",
+                    description=f"LXD error: {e}",
+                )
+
+            # Audit log: every state change leaves a trail so admins can
+            # trace who stopped/started what and when.
+            repo.write_audit_log(
+                user_id=req.context.user["id"],
+                action=f"container.{action}",
+                target=container_id,
+                detail=f"{action} container '{container['lxd_name']}'",
+            )
+
+            resp.media = {
+                "id": container_id,
+                "action": action,
+                "message": f"Container {action} successful",
+            }
+            return
+
+        # --- Limit change ---
+        new_ram = int(limits.get("ram_mb", container["limit_ram_mb"]))
+        new_cpu = float(limits.get("cpu", container["limit_cpu"]))
+        new_disk = int(limits.get("disk_gb", container["limit_disk_gb"]))
+
+        # Quota check uses the DELTA (new - old), not the absolute new
+        # value, because the user's quota is against their total allocation
+        # across all containers.
+        delta_ram = new_ram - container["limit_ram_mb"]
+        delta_cpu = new_cpu - container["limit_cpu"]
+        delta_disk = new_disk - container["limit_disk_gb"]
+
+        # Only check quota if limits are increasing (decreasing always OK)
+        if delta_ram > 0 or delta_cpu > 0 or delta_disk > 0:
+            allowed, reason = check_quota(
+                container["created_by"],
+                max(delta_ram, 0),
+                max(delta_cpu, 0.0),
+                max(delta_disk, 0),
+            )
+            if not allowed:
+                raise falcon.HTTPBadRequest(
+                    title="Quota exceeded",
+                    description=reason,
+                )
+
+        # Build LXD config from new limits
+        lxd_limits = {}
+        if new_ram > 0:
+            lxd_limits["limits.memory"] = f"{new_ram}MB"
+        if new_cpu > 0:
+            lxd_limits["limits.cpu"] = str(new_cpu)
+
+        # Update limits in LXD
+        try:
+            lxd_client.update_container_limits(
+                container["lxd_name"], lxd_limits
+            )
+        except Exception as e:
+            raise falcon.HTTPInternalServerError(
+                title="Limit update failed",
+                description=f"LXD error: {e}",
+            )
+
+        # Update the DB cache to keep it in sync with LXD
+        repo.update_container_limits(
+            container_id, new_ram, new_cpu, new_disk
+        )
+
+        # Audit log: limit changes leave a trail so admins can trace
+        # resource allocation changes over time.
+        repo.write_audit_log(
+            user_id=req.context.user["id"],
+            action="container.limits",
+            target=container_id,
+            detail=(
+                f"Updated limits on '{container['lxd_name']}': "
+                f"ram={new_ram}MB, cpu={new_cpu}, disk={new_disk}GB"
+            ),
+        )
+
+        resp.media = {
+            "id": container_id,
+            "limits": {"ram_mb": new_ram, "cpu": new_cpu, "disk_gb": new_disk},
+            "message": "Limits updated successfully",
+        }
+
+    def on_delete(
+        self,
+        req: falcon.Request,
+        resp: falcon.Response,
+        container_id: str,
+    ) -> None:
+        """Delete a container (admin only): removes from LXD, soft-deletes in DB."""
+        require_role(req, "admin")
+
+        container = repo.get_container_by_id(container_id)
+        if not container:
+            raise falcon.HTTPNotFound(
+                title="Container not found",
+                description=f"No container with id '{container_id}'.",
+            )
+        if container["deleted_at"] is not None:
+            raise falcon.HTTPGone(
+                title="Already deleted",
+                description="This container has already been deleted.",
+            )
+
+        # Delete from LXD first (stops if running, then removes)
+        try:
+            lxd_client.delete_container(container["lxd_name"])
+        except Exception as e:
+            raise falcon.HTTPInternalServerError(
+                title="Container deletion failed",
+                description=f"LXD error: {e}",
+            )
+
+        # Soft-delete in DB — the row stays so audit log entries and
+        # TinyFlux metric data referencing this container remain valid.
+        repo.soft_delete_container(container_id)
+
+        # Audit log: every deletion is recorded per the project brief's
+        # explicit requirement that destructive actions leave a trail.
+        repo.write_audit_log(
+            user_id=req.context.user["id"],
+            action="container.delete",
+            target=container_id,
+            detail=f"Deleted container '{container['lxd_name']}'",
+        )
+
+        resp.media = {
+            "id": container_id,
+            "message": f"Container '{container['lxd_name']}' deleted",
+        }

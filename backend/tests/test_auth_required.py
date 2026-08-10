@@ -6,16 +6,6 @@ Extended with JWT round-trip tests.
 Extended with the "every route requires auth" test.
 """
 
-import os
-import tempfile
-
-# Override DATABASE_PATH before importing any backend module that
-# triggers config loading, so tests don't touch the real database.
-if "DATABASE_PATH" not in os.environ:
-    _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    _tmp.close()
-    os.environ.setdefault("DATABASE_PATH", _tmp.name)
-
 from backend.auth.oauth import build_google_auth_url
 from backend.auth.jwt_utils import (
     create_access_token,
@@ -157,8 +147,8 @@ from backend.app import create_app
 PROTECTED_ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/containers"),
     ("POST", "/api/containers"),
-    # Phase 7.2:  ("PATCH", "/api/containers/{id}"),
-    # Phase 7.2:  ("DELETE", "/api/containers/{id}"),
+    ("PATCH", "/api/containers/nonexistent-id"),
+    ("DELETE", "/api/containers/nonexistent-id"),
     # Phase 8.1:  ("GET", "/api/users"),
     # Phase 8.1:  ("POST", "/api/users"),
     # Phase 11.1: ("GET", "/api/metrics/latest"),

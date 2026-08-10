@@ -1,36 +1,16 @@
 """
-Tests for the database repo layer (users and sessions).
+Tests for the database repo layer (users, sessions, containers,
+assignments, and audit log).
 
-Uses a temporary SQLite file for each test run so tests are isolated
-and don't touch the real application database.
+Uses the shared temp database from conftest.py so tests don't touch
+the real application database.
 """
 
 import os
-import tempfile
 
 import pytest
 
-# Override DATABASE_PATH before importing repo, so all repo functions
-# operate against our temp database instead of the real one.
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["DATABASE_PATH"] = _tmp.name
-
-from backend.db.init_db import init_db
 from backend.db import repo
-
-
-@pytest.fixture(autouse=True, scope="module")
-def setup_db():
-    """Create the schema in the temp database once for the whole module."""
-    # Remove the temp file so init_db sees a fresh path and creates it
-    if os.path.exists(_tmp.name):
-        os.remove(_tmp.name)
-    init_db(_tmp.name)
-    yield
-    # Cleanup after all tests in this module
-    if os.path.exists(_tmp.name):
-        os.remove(_tmp.name)
 
 
 class TestUserCRUD:

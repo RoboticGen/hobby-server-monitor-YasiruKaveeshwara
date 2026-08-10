@@ -159,3 +159,41 @@ def execute_command(
     container = client.containers.get(name)
     result = container.execute(command)
     return (result.exit_code, result.stdout, result.stderr)
+
+
+# ====================== State Management ====================================
+
+# Valid state actions that map to pylxd container methods.
+_STATE_ACTIONS = {"start", "stop", "restart", "freeze", "unfreeze"}
+
+
+def change_container_state(name: str, action: str) -> None:
+    """Change a container's state (start, stop, restart, freeze, unfreeze).
+
+    Raises ValueError if the action is not one of the allowed actions.
+    Raises on LXD failure (e.g., trying to start an already running container).
+    """
+    if action not in _STATE_ACTIONS:
+        raise ValueError(
+            f"Invalid state action '{action}'. "
+            f"Must be one of: {_STATE_ACTIONS}"
+        )
+    client = _get_client()
+    container = client.containers.get(name)
+    getattr(container, action)(wait=True)
+
+
+# ====================== Limit Updates =======================================
+
+
+def update_container_limits(name: str, limits: dict) -> None:
+    """Update resource limits on a running or stopped LXD container.
+
+    The limits dict should contain LXD config keys like 'limits.memory'
+    and 'limits.cpu'. Existing keys not in the dict are left unchanged.
+    """
+    client = _get_client()
+    container = client.containers.get(name)
+    for key, value in limits.items():
+        container.config[key] = value
+    container.save(wait=True)

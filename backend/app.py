@@ -18,7 +18,10 @@ from backend.resources.auth import (
     LogoutResource,
     MeResource,
 )
-from backend.resources.containers import ContainerListResource
+from backend.resources.containers import (
+    ContainerDetailResource,
+    ContainerListResource,
+)
 from backend.resources.health import HealthResource
 
 
@@ -41,7 +44,7 @@ def create_app() -> falcon.App:
     # health check
     app.add_route("/health", HealthResource())
 
-    # Phase 5.3 — authentication routes
+    # authentication routes
     app.add_route("/api/auth/google/login", GoogleLoginResource())
     app.add_route("/api/auth/google/callback", GoogleCallbackResource())
     app.add_route("/api/auth/me", MeResource())
@@ -50,8 +53,10 @@ def create_app() -> falcon.App:
     # container list + create
     app.add_route("/api/containers", ContainerListResource())
 
+    # container detail (update/delete)
+    app.add_route("/api/containers/{container_id}", ContainerDetailResource())
+
     # Future routes (registered as their resource modules are built):
-    # Phase 7.2:  /api/containers/{id}  (update/delete)
     # Phase 8.1:  /api/users
     # Phase 11.1: /api/metrics/*
     # Phase 12.1: /api/containers/{id}/exec

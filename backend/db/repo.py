@@ -303,6 +303,29 @@ def rename_container_lxd_name(
         conn.close()
 
 
+def update_container_limits(
+    container_id: str,
+    limit_ram_mb: int,
+    limit_cpu: float,
+    limit_disk_gb: int,
+) -> None:
+    """Update the DB-cached resource limits for a container.
+
+    Called after successfully updating the limits in LXD, to keep the
+    DB cache in sync. The quota module reads these cached values.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE containers SET limit_ram_mb = ?, limit_cpu = ?, "
+            "limit_disk_gb = ? WHERE id = ?",
+            (limit_ram_mb, limit_cpu, limit_disk_gb, container_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # soft_delete_container does NOT hard-delete the row. The container record
 # must survive deletion so that:
 #   1. Audit log entries referencing this container remain valid.
