@@ -1,0 +1,161 @@
+"""
+LXD client wrapper — the ONLY module that imports pylxd.
+
+Every other module in the project accesses LXD functionality through the
+functions exported here. This single-point-of-import rule exists for
+security auditability: a reviewer can open this one file and see the
+complete set of operations the application performs against the host's
+LXD daemon, without having to grep the entire codebase for pylxd calls.
+
+All functions in this module are designed to be safe to call even if LXD
+is unreachable — they return None/False/empty rather than crashing, and
+leave error handling to their callers.
+"""
+
+import pylxd
+
+from backend.config import config
+
+
+def _get_client() -> pylxd.Client:
+    """Create a pylxd Client using the configured LXD endpoint.
+
+    If LXD_CERT_PATH and LXD_KEY_PATH are set (non-empty), they are
+    passed for remote HTTPS connections. Otherwise a unix socket
+    connection is assumed.
+    """
+    if config.lxd_cert_path and config.lxd_key_path:
+        return pylxd.Client(
+            endpoint=config.lxd_endpoint,
+            cert=(config.lxd_cert_path, config.lxd_key_path),
+            verify=False,  # self-signed LXD certs in typical setups
+        )
+    return pylxd.Client(endpoint=config.lxd_endpoint)
+
+
+def check_lxd_reachable() -> bool:
+    """Check whether the LXD daemon is reachable.
+
+    Returns True if we can connect and query LXD, False otherwise.
+    This function must never raise — it is called by the health
+    endpoint and a crash there would hide the real issue
+    (LXD being down) behind a 500 error.
+    """
+    try:
+        client = _get_client()
+        # Accessing .host_info performs a lightweight GET /1.0 call
+        _ = client.host_info
+        return True
+    except Exception:
+        return False
+
+
+def list_containers() -> list[dict]:
+    """Return a list of all containers known to LXD.
+
+    Each dict contains at minimum: name, status, architecture,
+    created_at, and config (which includes memory/cpu limits).
+    Returns an empty list if LXD is unreachable.
+    """
+    try:
+        client = _get_client()
+        containers = client.containers.all()
+        return [
+            {
+                "name": c.name,
+                "status": c.status,
+                "architecture": c.architecture,
+                "created_at": str(c.created_at),
+                "config": dict(c.config) if c.config else {},
+            }
+            for c in containers
+        ]
+    except Exception:
+        return []
+
+
+def get_container(name: str) -> dict | None:
+    """Look up a single container by its LXD-side name.
+
+    Returns a dict with the container's details, or None if not found
+    or if LXD is unreachable.
+    """
+    try:
+        client = _get_client()
+        c = client.containers.get(name)
+        return {
+            "name": c.name,
+            "status": c.status,
+            "architecture": c.architecture,
+            "created_at": str(c.created_at),
+            "config": dict(c.config) if c.config else {},
+        }
+    except Exception:
+        return None
+
+
+def create_container(name: str, image: str, limits: dict) -> dict:
+    """Create a new LXD container with the given name, image, and limits.
+
+    The limits dict should contain keys like 'limits.memory' and
+    'limits.cpu' matching the LXD config format.
+
+    Returns a dict describing the created container.
+    Raises on failure (callers should handle this).
+    """
+    client = _get_client()
+    container_config = {
+        "name": name,
+        "source": {
+            "type": "image",
+            "alias": image,
+        },
+        "config": limits,
+    }
+    container = client.containers.create(container_config, wait=True)
+    return {
+        "name": container.name,
+        "status": container.status,
+        "architecture": container.architecture,
+        "created_at": str(container.created_at),
+        "config": dict(container.config) if container.config else {},
+    }
+
+
+def delete_container(name: str) -> None:
+    """Stop (if running) and delete an LXD container.
+
+    Stops the container first if it is currently running, then
+    deletes it. Raises on failure (callers should handle this).
+    """
+    client = _get_client()
+    container = client.containers.get(name)
+    if container.status.lower() == "running":
+        container.stop(wait=True)
+    container.delete(wait=True)
+
+
+def rename_container(old_name: str, new_name: str) -> None:
+    """Rename an LXD container.
+
+    The container must be stopped for rename to succeed in most
+    LXD configurations. Raises on failure.
+    """
+    client = _get_client()
+    container = client.containers.get(old_name)
+    container.rename(new_name, wait=True)
+
+
+def execute_command(
+    name: str, command: list[str]
+) -> tuple[int, str, str]:
+    """Execute a command inside a running LXD container.
+
+    Returns a tuple of (exit_code, stdout, stderr).
+    The container must be in the 'Running' state.
+    Raises on failure (e.g., container not running, command not found).
+    """
+    client = _get_client()
+    container = client.containers.get(name)
+    result = container.execute(command)
+    return (result.exit_code, result.stdout, result.stderr)
