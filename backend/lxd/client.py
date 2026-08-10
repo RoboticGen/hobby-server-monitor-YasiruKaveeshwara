@@ -197,3 +197,86 @@ def update_container_limits(name: str, limits: dict) -> None:
     for key, value in limits.items():
         container.config[key] = value
     container.save(wait=True)
+
+
+# ====================== Error Types =========================================
+
+
+class LXDUnavailableError(Exception):
+    """Raised when LXD is unreachable or returns an unexpected error.
+
+    The collector catches this specifically so it can log a warning and
+    continue without crashing — matching the brief's independence
+    requirement. Callers that cannot tolerate LXD being down (e.g., the
+    health endpoint) should also catch this.
+    """
+
+
+# ====================== Metrics State =======================================
+
+
+def get_container_state(lxd_name: str) -> dict:
+    """Return a flat metrics dict for a running container.
+
+    Reads live state from LXD (CPU usage, RAM, disk, network I/O, and
+    process count) and shapes it into a flat dict matching the TinyFlux
+    field layout described in PROJECT-PLAN.md section 8.2. All values
+    are floats for TinyFlux compatibility.
+
+    Raises LXDUnavailableError if LXD is unreachable or the container
+    is not in a state where metrics are readable (e.g. stopped). The
+    collector catches this and logs a warning instead of crashing.
+    """
+    try:
+        client = _get_client()
+        container = client.containers.get(lxd_name)
+        state = container.state()
+    except Exception as exc:
+        raise LXDUnavailableError(
+            f"Cannot read state for container '{lxd_name}': {exc}"
+        ) from exc
+
+    # CPU: LXD returns total nanoseconds used; we expose it as a float.
+    # The retention/downsampling job (Phase 10) converts successive
+    # snapshots to a percentage average before writing "5m" points.
+    cpu_usage = 0.0
+    if state.cpu and state.cpu.usage is not None:
+        cpu_usage = float(state.cpu.usage)
+
+    # Memory in bytes
+    ram_used_mb = 0.0
+    ram_total_mb = 0.0
+    if state.memory:
+        ram_used_mb = float(state.memory.usage or 0) / (1024 * 1024)
+        ram_total_mb = float(state.memory.usage_peak or 0) / (1024 * 1024)
+
+    # Disk usage: sum the root disk device
+    disk_used_mb = 0.0
+    if state.disk:
+        root = state.disk.get("root")
+        if root and root.usage is not None:
+            disk_used_mb = float(root.usage) / (1024 * 1024)
+
+    # Network I/O: sum across all interfaces
+    net_rx_bytes = 0.0
+    net_tx_bytes = 0.0
+    if state.network:
+        for iface_data in state.network.values():
+            counters = iface_data.get("counters", {})
+            net_rx_bytes += float(counters.get("bytes_received", 0))
+            net_tx_bytes += float(counters.get("bytes_sent", 0))
+
+    # Process count
+    pid_count = 0.0
+    if state.processes is not None:
+        pid_count = float(state.processes)
+
+    return {
+        "cpu_usage_ns": cpu_usage,
+        "ram_used_mb": ram_used_mb,
+        "ram_peak_mb": ram_total_mb,
+        "disk_used_mb": disk_used_mb,
+        "net_rx_bytes": net_rx_bytes,
+        "net_tx_bytes": net_tx_bytes,
+        "pid_count": pid_count,
+    }
