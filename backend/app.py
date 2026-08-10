@@ -11,6 +11,12 @@ from wsgiref.simple_server import make_server
 import falcon
 
 from backend.config import config
+from backend.resources.auth import (
+    GoogleCallbackResource,
+    GoogleLoginResource,
+    LogoutResource,
+    MeResource,
+)
 from backend.resources.health import HealthResource
 
 
@@ -25,11 +31,17 @@ def create_app() -> falcon.App:
 
     # --- Route registration ------------------------------------------
     # Each route is added in the phase that builds its resource class.
+
     # Phase 3.2 — health check (stub, extended in Phase 14)
     app.add_route("/health", HealthResource())
 
+    # Phase 5.3 — authentication routes
+    app.add_route("/api/auth/google/login", GoogleLoginResource())
+    app.add_route("/api/auth/google/callback", GoogleCallbackResource())
+    app.add_route("/api/auth/me", MeResource())
+    app.add_route("/api/auth/logout", LogoutResource())
+
     # Future routes (registered as their resource modules are built):
-    # Phase 5.3:  /api/auth/* routes
     # Phase 7.1:  /api/containers
     # Phase 8.1:  /api/users
     # Phase 11.1: /api/metrics/*
