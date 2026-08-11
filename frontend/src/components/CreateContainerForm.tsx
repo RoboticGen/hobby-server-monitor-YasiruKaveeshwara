@@ -5,7 +5,7 @@
  * limits, then POSTs them to /api/containers and reports the server's own
  * verdict verbatim.
  */
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
 
 /** `host` block of GET /api/accounting. Null when LXD is unreachable. */
@@ -234,7 +234,7 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	 * returns the exact rule as prose, so duplicating it would create a second
 	 * copy to keep in sync and risk rejecting names the server would accept.
 	 */
-	async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+	async function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
 		event.preventDefault();
 		setSubmitting(true);
 		setError(null);

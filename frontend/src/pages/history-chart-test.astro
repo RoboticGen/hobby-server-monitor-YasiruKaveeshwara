@@ -1,0 +1,86 @@
+---
+// THROWAWAY test page for Step 19.1, referenced by that step's test only.
+// The real consumer is Step 19.2 (containers/[id].astro); delete this file
+// once that page exists and renders HistoryChart against live history.
+//
+// Points are hardcoded here on purpose: the step's test is "does it draw a
+// visible line", which must not depend on a running backend or a container
+// that happens to have collected samples.
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>HistoryChart test</title>
+  </head>
+  <body>
+    <main>
+      <h1>HistoryChart test</h1>
+
+      <h2>Varying series (should draw a visible zig-zag line)</h2>
+      <div id="varying"></div>
+
+      <h2>Flat series (should draw a straight horizontal line)</h2>
+      <div id="flat"></div>
+
+      <h2>Single point (should draw the grey placeholder rule)</h2>
+      <div id="sparse"></div>
+    </main>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import HistoryChart from "../components/HistoryChart";
+      import type { HistoryPoint } from "../components/HistoryChart";
+
+      /** Build a series from bare numbers, spacing timestamps a minute apart. */
+      function series(values: number[]): HistoryPoint[] {
+        const start = Date.parse("2026-01-01T00:00:00Z");
+        return values.map((value, index) => ({
+          time: new Date(start + index * 60_000).toISOString(),
+          value,
+        }));
+      }
+
+      // Three cases, because the interesting behaviour is at the edges:
+      // a normal series, a flat one (the min === max divide-by-zero guard),
+      // and one too short to draw (the placeholder branch).
+      const cases: [string, HistoryPoint[]][] = [
+        ["varying", series([12, 48, 30, 66, 21, 75, 40, 58, 33, 80])],
+        ["flat", series([50, 50, 50, 50, 50])],
+        ["sparse", series([42])],
+      ];
+
+      for (const [id, points] of cases) {
+        const mount = document.getElementById(id);
+        if (mount) {
+          createRoot(mount).render(createElement(HistoryChart, { points }));
+        }
+      }
+    </script>
+
+    <style>
+      main {
+        font-family: system-ui, sans-serif;
+        max-width: 48rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+
+      h2 {
+        font-size: 0.95rem;
+        margin: 1.5rem 0 0.5rem;
+      }
+
+      /* The chart inherits its line colour from `color`, so the page sets
+         it here rather than the component hardcoding one. */
+      :global(.history-chart) {
+        display: block;
+        width: 100%;
+        color: #06c;
+        border: 1px solid #e0e0e0;
+      }
+    </style>
+  </body>
+</html>
