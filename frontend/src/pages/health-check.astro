@@ -1,0 +1,50 @@
+---
+// TEMPORARY diagnostic page (Step 15.2).
+//
+// Its only job is to prove that the Astro dev server on :4321 can reach the
+// Falcon dev server on :8000 across the origin boundary — that the base URL,
+// CORS headers, and apiFetch wrapper all line up before any real page depends
+// on them. Delete this file once the dashboard pages exist and exercise the
+// same path themselves.
+import { apiFetch, ApiError } from "../lib/api";
+
+/** Shape of the backend's GET /health body (backend/resources/health.py). */
+interface HealthResponse {
+	status: "ok" | "degraded";
+	lxd_reachable: boolean;
+}
+
+// Runs during Astro's render, so this fetch is made by the Node process, not
+// the browser. A failure here is caught rather than left to throw: a
+// connectivity checker that renders a 500 page tells you far less than one
+// that prints why the call failed.
+let health: HealthResponse | null = null;
+let error: string | null = null;
+
+try {
+	health = await apiFetch<HealthResponse>("/health");
+} catch (err) {
+	error =
+		err instanceof ApiError
+			? `ApiError ${err.status}: ${err.message}`
+			: `Request failed: ${String(err)}`;
+}
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width" />
+		<title>Backend connectivity check</title>
+	</head>
+	<body>
+		<h1>Backend connectivity check</h1>
+		{
+			health ? (
+				<pre>{JSON.stringify(health, null, 2)}</pre>
+			) : (
+				<pre>{error}</pre>
+			)
+		}
+	</body>
+</html>
