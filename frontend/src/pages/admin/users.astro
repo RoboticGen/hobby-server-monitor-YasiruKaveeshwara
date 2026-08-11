@@ -1,0 +1,312 @@
+---
+// Admin user management: everyone on the system, with their role, status and
+// quota, plus the invite form.
+//
+// WHY THE USER FETCH IS CLIENT-SIDE, NOT IN THIS FRONTMATTER:
+// Same reason as index.astro and admin/index.astro. The build guide describes
+// a server-rendered list from GET /api/users, but frontmatter runs at BUILD
+// time under Astro's static output (decision 7.12 — Falcon serves the built
+// files, there is no Node server in production). At build time there is no
+// session cookie, so the call would 401 and bake a permanent error into the
+// HTML. The fetch therefore runs in the browser, where the cookie exists.
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Users · Server Monitor</title>
+  </head>
+  <body>
+    <main>
+      <p><a href="/admin">← Containers</a></p>
+      <h1>Users</h1>
+
+      <!-- Three exclusive states; the script unhides exactly one once the
+           fetch resolves. There is deliberately no empty state: the caller
+           has to be a signed-in admin to read this endpoint at all, so they
+           are always in their own results and the list can never be empty. -->
+      <p id="loading">Loading users…</p>
+      <p id="error" role="alert" hidden></p>
+
+      <table id="users" hidden>
+        <thead>
+          <tr>
+            <th scope="col">Email</th>
+            <th scope="col">Role</th>
+            <th scope="col">Status</th>
+            <th scope="col">RAM</th>
+            <th scope="col">CPU</th>
+            <th scope="col">Disk</th>
+          </tr>
+        </thead>
+        <tbody id="users-body"></tbody>
+      </table>
+
+      <!-- Hidden until the caller is confirmed to be an admin, so a non-admin
+           never sees an invite control the API would refuse. -->
+      <div id="form-mount" hidden></div>
+    </main>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import { apiFetch, ApiError } from "../../lib/api";
+      import InviteUserForm from "../../components/InviteUserForm";
+
+      /**
+       * What a user's containers currently add up to, summed from the DB-cached
+       * limits by compute_user_allocation(). The list endpoint attaches it to
+       * every row so a quota can be shown as "used of allowed" rather than as a
+       * ceiling with no context.
+       */
+      interface Allocation {
+        ram_mb: number;
+        cpu: number;
+        disk_gb: number;
+      }
+
+      /** One row of GET /api/users: the users table columns plus `allocation`. */
+      interface UserRecord {
+        id: string;
+        email: string;
+        role: string;
+        status: string;
+        quota_ram_mb: number;
+        quota_cpu: number;
+        quota_disk_gb: number;
+        allocation: Allocation;
+      }
+
+      interface UserListResponse {
+        users: UserRecord[];
+      }
+
+      const loading = document.getElementById("loading") as HTMLElement;
+      const errorEl = document.getElementById("error") as HTMLElement;
+      const table = document.getElementById("users") as HTMLElement;
+      const tbody = document.getElementById("users-body") as HTMLElement;
+      const formMount = document.getElementById("form-mount") as HTMLElement;
+
+      /** Show a message in the error slot and hide the spinner. */
+      function fail(message: string): void {
+        loading.hidden = true;
+        table.hidden = true;
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      }
+
+      /** Drop trailing zeros so a CPU quota of 2.0 reads "2" and 1.5 stays "1.5". */
+      function formatNumber(value: number): string {
+        return String(Number(value.toFixed(2)));
+      }
+
+      /**
+       * Render one resource as "used / quota", or "used of unlimited".
+       *
+       * The zero case is not cosmetic. backend/lxd/quota.py skips the check
+       * entirely for a resource whose quota is 0, so a bare "0" in this column
+       * would tell the admin the exact opposite of what the number means —
+       * "no allowance" instead of "no ceiling".
+       */
+      function formatQuota(used: number, quota: number, unit: string): string {
+        return quota === 0
+          ? `${formatNumber(used)} ${unit} / unlimited`
+          : `${formatNumber(used)} / ${formatNumber(quota)} ${unit}`;
+      }
+
+      /**
+       * Draw one table row per user.
+       *
+       * Replaces the body rather than appending, so calling this again after an
+       * invite does not duplicate every existing row.
+       */
+      function renderUsers(users: UserRecord[]): void {
+        tbody.replaceChildren();
+
+        for (const user of users) {
+          const row = document.createElement("tr");
+          // Drives the status styling below, so "invited" reads differently
+          // from "active" without keeping a second copy of the status in a
+          // CSS class that could drift from the value shown in the cell.
+          row.dataset.status = user.status;
+
+          const cells = [
+            user.email,
+            user.role,
+            // Printed verbatim rather than prettified: 'invited' / 'active' /
+            // 'revoked' are the literal values the API stores, and an admin
+            // reading this table is the person who will match them against a
+            // curl response or the audit log.
+            user.status,
+            formatQuota(user.allocation.ram_mb, user.quota_ram_mb, "MB"),
+            formatQuota(user.allocation.cpu, user.quota_cpu, "cores"),
+            formatQuota(user.allocation.disk_gb, user.quota_disk_gb, "GB"),
+          ];
+
+          for (const value of cells) {
+            const cell = document.createElement("td");
+            // textContent, never innerHTML: the email originates with a third
+            // party (Google) and passes through our database, so rendering it
+            // as markup would make it an injection vector.
+            cell.textContent = value;
+            row.appendChild(cell);
+          }
+
+          tbody.appendChild(row);
+        }
+      }
+
+      /**
+       * Re-fetch the user list and repaint the table.
+       *
+       * Passed to the form as its onInvited callback: the new row has to come
+       * from the server, since only the backend knows the generated id and the
+       * allocation totals the quota columns display.
+       */
+      async function refreshUsers(): Promise<void> {
+        try {
+          const list = await apiFetch<UserListResponse>("/api/users");
+          renderUsers(list.users);
+        } catch {
+          // The invite itself succeeded — only the refresh failed, and the
+          // form has already reported its own success. Replacing the page
+          // with an error here would contradict it.
+        }
+      }
+
+      try {
+        // No separate /api/auth/me call: this endpoint is admin-only, so its
+        // own answer *is* the role check. Asking /me first would be a second
+        // source of the same truth and a second round trip, and the two could
+        // disagree if the caller's role changed between them.
+        const list = await apiFetch<UserListResponse>("/api/users");
+
+        loading.hidden = true;
+        table.hidden = false;
+        renderUsers(list.users);
+
+        formMount.hidden = false;
+        createRoot(formMount).render(
+          createElement(InviteUserForm, { onInvited: refreshUsers }),
+        );
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          // No session. `replace` keeps this page out of history, so Back does
+          // not return the user to a page that will bounce them again.
+          window.location.replace("/login");
+        } else if (err instanceof ApiError && err.status === 403) {
+          // require_role(req, "admin") raises 403 here and nowhere else, so a
+          // 403 can only mean the caller is a signed-in non-admin. Saying that
+          // plainly beats echoing the API's wording, which does not explain
+          // that the whole page is off-limits rather than one control.
+          fail("This page is for administrators. Return to the dashboard.");
+        } else if (err instanceof ApiError) {
+          fail(`Could not load users (${err.status}): ${err.message}`);
+        } else {
+          fail("Could not reach the server to load users.");
+        }
+      }
+    </script>
+
+    <style>
+      main {
+        font-family: system-ui, sans-serif;
+        max-width: 60rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+
+      #error {
+        color: #a12;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 0.45rem 0.6rem;
+        border-bottom: 1px solid #e0e0e0;
+      }
+
+      th {
+        font-size: 0.8rem;
+        color: #555;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+
+      /* Quota figures line up column-wise so they can be compared by eye. */
+      td:nth-child(n + 4) {
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* An invited user has not signed in yet and a revoked one can no longer
+         sign in, so neither is a live account — muting both keeps the rows
+         that matter visually first. */
+      tr[data-status="invited"] td,
+      tr[data-status="revoked"] td {
+        color: #777;
+      }
+
+      /* Form internals are styled here rather than in InviteUserForm.tsx,
+         matching the convention the other pages follow: the component renders
+         plain semantic markup and carries no styles of its own. */
+      :global(.invite-form) {
+        display: grid;
+        gap: 0.35rem;
+        margin-top: 2.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #d0d0d0;
+        max-width: 28rem;
+      }
+
+      :global(.invite-form h2) {
+        margin: 0 0 0.5rem;
+        font-size: 1.1rem;
+      }
+
+      :global(.invite-form label) {
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin-top: 0.5rem;
+      }
+
+      :global(.invite-form input),
+      :global(.invite-form select) {
+        font: inherit;
+        padding: 0.35rem 0.5rem;
+      }
+
+      :global(.invite-form button) {
+        font: inherit;
+        margin-top: 1rem;
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+      }
+
+      :global(.invite-form .hint) {
+        margin: 0;
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      :global(.invite-form .error) {
+        margin: 0.5rem 0 0;
+        color: #a12;
+        font-size: 0.9rem;
+      }
+
+      :global(.invite-form .success) {
+        margin: 0.5rem 0 0;
+        color: #161;
+        font-size: 0.9rem;
+      }
+    </style>
+  </body>
+</html>
