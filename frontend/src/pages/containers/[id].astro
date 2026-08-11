@@ -6,6 +6,12 @@
 // re-fetches GET /api/containers/{id}/history?window=... and re-renders the
 // chart.
 //
+// Step 22.1 also mounts the Terminal (Phase 21) here. This is the one page
+// that already resolves a single container and enforces access on it, so it is
+// where "look at this container" and "run something in this container" belong
+// together — and it gives Terminal a route reachable by clicking a tile on
+// either dashboard, rather than only by hand-typing a query string.
+//
 // WHY THE CONTAINER ID ARRIVES AS ?container=<uuid> AND NOT AS THE [id] PATH
 // SEGMENT: this project builds to static output with no adapter (decision
 // 7.12 — Falcon serves the built files, there is no Node server in
@@ -65,6 +71,12 @@ import SiteHeader from "../../components/SiteHeader.astro";
 
         <p id="chart-status" role="status">Loading history…</p>
         <div id="chart"></div>
+
+        <h2>Terminal</h2>
+        <!-- Mounted by the script rather than with a client: directive because
+             the container id comes from the URL, which does not exist at build
+             time under static output. -->
+        <div id="terminal"></div>
       </div>
     </main>
 
@@ -74,6 +86,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       import { apiFetch, ApiError } from "../../lib/api";
       import MetricTile from "../../components/MetricTile";
       import HistoryChart from "../../components/HistoryChart";
+      import Terminal from "../../components/Terminal";
 
       /**
        * GET /api/containers/{id} returns the raw DB row — unlike the list
@@ -135,6 +148,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       const detail = document.getElementById("detail") as HTMLElement;
       const tileMount = document.getElementById("tile") as HTMLElement;
       const chartMount = document.getElementById("chart") as HTMLElement;
+      const terminalMount = document.getElementById("terminal") as HTMLElement;
       const chartStatus = document.getElementById(
         "chart-status",
       ) as HTMLElement;
@@ -283,6 +297,16 @@ import SiteHeader from "../../components/SiteHeader.astro";
           bindWindowButtons(container.id);
           // 1h matches the aria-pressed="true" button in the markup above.
           void loadHistory(container.id, "1h");
+
+          // Mounted only after the metadata call above succeeded — and that is
+          // the call that enforces access, answering 403 for a container this
+          // caller was not assigned. So a command box never appears for a
+          // container the caller cannot use. That is presentation, not
+          // protection: the exec endpoint re-checks access on every call
+          // regardless of what the page chose to render.
+          createRoot(terminalMount).render(
+            createElement(Terminal, { containerId: container.id }),
+          );
         } catch (err) {
           // Same split as the dashboard: 401 means no session, so sign in.
           // Everything else — including the 403 this page must handle — is
@@ -356,6 +380,87 @@ import SiteHeader from "../../components/SiteHeader.astro";
         width: 100%;
         color: #06c;
         border: 1px solid #e0e0e0;
+      }
+
+      /* Terminal internals, styled here for the same reason as the tile and the
+         chart: the component renders plain semantic markup and no styles. */
+      :global(.terminal-input) {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      :global(.terminal-input label) {
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+
+      /* The input takes the remaining width: commands are the long part of
+         this row, the label and button are fixed. */
+      :global(.terminal-input input) {
+        flex: 1;
+        font-family: ui-monospace, monospace;
+        font-size: 0.9rem;
+        padding: 0.35rem 0.5rem;
+      }
+
+      :global(.terminal-input button) {
+        font: inherit;
+        padding: 0.35rem 1rem;
+        cursor: pointer;
+      }
+
+      :global(.terminal .hint) {
+        margin: 0.5rem 0 0;
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      /* The height cap is what makes this a scrolling log rather than a page
+         that grows without limit, and it is what the component's auto-scroll
+         to the newest entry depends on. */
+      :global(.terminal-log) {
+        max-height: 20rem;
+        overflow-y: auto;
+        margin: 0.75rem 0 0;
+        padding: 0.75rem;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: #fbfbfb;
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        /* Long output lines wrap instead of forcing the box to scroll
+           sideways, which would hide the start of every line. */
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      /* The echoed command is the anchor for reading the transcript, so it is
+         the one part that is emphasised. */
+      :global(.terminal-log .prompt) {
+        font-weight: 600;
+        color: #111;
+      }
+
+      :global(.terminal-log .stderr) {
+        color: #a12;
+      }
+
+      :global(.terminal-log .exit) {
+        color: #555;
+      }
+
+      /* A non-zero exit and a refused request both mean "this did not do what
+         you asked", so they share one treatment. */
+      :global(.terminal-log .failure) {
+        color: #a12;
+        font-weight: 600;
+      }
+
+      :global(.terminal-log:focus-visible) {
+        outline: 3px solid #0b3d91;
+        outline-offset: 2px;
       }
 
       /* Tile internals: MetricTile renders plain semantic markup and carries

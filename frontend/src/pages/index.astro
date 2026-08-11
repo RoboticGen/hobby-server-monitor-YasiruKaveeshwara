@@ -1,5 +1,16 @@
 ---
-// Landing page. Shows who you are signed in as, or sends you to /login.
+// Landing page and container-user dashboard.
+//
+// Step 16.2 made this page answer "who am I?". Step 22.1 extends that role
+// branch so a non-admin also sees the containers assigned to them here, with
+// live tiles and a link through to each container's history and terminal.
+//
+// WHY THIS PAGE AND NOT A NEW /my-containers ROUTE:
+// Step 22.1 offers either. `/` wins because of what the header nav shows a
+// non-admin: the Containers and Users links are admin-only and stay hidden, so
+// "Dashboard" (`/`) is the *only* route in their navigation. Putting their
+// containers anywhere else would leave them landing on a page that states
+// their email and offers no way to reach the thing they signed in for.
 //
 // WHY THE SESSION CHECK IS CLIENT-SIDE, NOT IN THIS FRONTMATTER:
 // The build guide describes calling apiFetch("/api/auth/me") here at render
@@ -37,12 +48,46 @@ import SiteHeader from "../components/SiteHeader.astro";
         Sign out lives in the header now, which is on every page. Keeping a
         second copy here would put two of the same control on one screen.
       -->
+
+      <!--
+        The two role branches below are exclusive: the script unhides exactly
+        one of them once /api/auth/me answers.
+      -->
+
+      <!--
+        Admins get signposts, not a personal container list. GET /api/containers
+        returns every container on the host for an admin, so rendering it here
+        would duplicate /admin rather than show "mine".
+      -->
+      <section id="admin-view" hidden>
+        <p>
+          You are signed in as an administrator. Manage
+          <a href="/admin">all containers</a> or
+          <a href="/admin/users">users and quotas</a>.
+        </p>
+      </section>
+
+      <section id="user-view" hidden>
+        <h2>Your containers</h2>
+
+        <!-- Exclusive states again, one per outcome of the list fetch. -->
+        <p id="containers-loading">Loading your containers…</p>
+        <p id="containers-error" role="alert" hidden></p>
+        <p id="containers-empty" hidden>
+          No containers are assigned to your account yet. An administrator
+          assigns containers to you; once they do, they appear here.
+        </p>
+        <div id="tiles" class="tiles" hidden></div>
+      </section>
     </main>
 
     <p id="loading">Checking your session…</p>
 
     <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../lib/api";
+      import MetricTile from "../components/MetricTile";
 
       /** Shape of GET /api/auth/me (backend/resources/auth.py MeResource). */
       interface MeResponse {
@@ -52,8 +97,128 @@ import SiteHeader from "../components/SiteHeader.astro";
         status: string;
       }
 
+      /**
+       * A container as returned by GET /api/containers: the DB row plus the
+       * live LXD fields that _enrich_with_lxd_state() merges in.
+       */
+      interface ContainerRecord {
+        id: string;
+        lxd_name: string;
+        image: string;
+        limit_ram_mb: number;
+        limit_cpu: number;
+        limit_disk_gb: number;
+        lxd_status: string;
+      }
+
+      interface ContainerListResponse {
+        containers: ContainerRecord[];
+      }
+
       const app = document.getElementById("app") as HTMLElement;
       const loading = document.getElementById("loading") as HTMLElement;
+      const adminView = document.getElementById("admin-view") as HTMLElement;
+      const userView = document.getElementById("user-view") as HTMLElement;
+      const listLoading = document.getElementById(
+        "containers-loading",
+      ) as HTMLElement;
+      const listError = document.getElementById(
+        "containers-error",
+      ) as HTMLElement;
+      const listEmpty = document.getElementById(
+        "containers-empty",
+      ) as HTMLElement;
+      const tiles = document.getElementById("tiles") as HTMLElement;
+
+      /**
+       * Draw one live tile per container, each with a link to its detail page.
+       *
+       * Mounting is imperative because the container set is only known at
+       * runtime — Astro's `client:` directives resolve at build time, when
+       * these containers do not exist yet.
+       *
+       * The link is a sibling of the tile rather than a wrapper around it: the
+       * tile updates itself every 10 seconds and carries its own status text,
+       * and a live region inside a link makes for a link whose accessible name
+       * keeps changing under the reader. An explicit link with its own
+       * aria-label naming the container avoids that.
+       */
+      function renderTiles(containers: ContainerRecord[]): void {
+        tiles.replaceChildren();
+
+        for (const container of containers) {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+
+          const mount = document.createElement("div");
+
+          const link = document.createElement("a");
+          // Query string rather than a path segment because the detail route
+          // is a single static shell — see the comment at the top of
+          // pages/containers/[id].astro for why static output forces that.
+          link.href = `/containers/view/?container=${encodeURIComponent(container.id)}`;
+          link.className = "detail-link";
+          link.textContent = "History and terminal →";
+          // The visible text repeats across every card, so the accessible name
+          // says which container it belongs to.
+          link.setAttribute(
+            "aria-label",
+            `History and terminal for ${container.lxd_name}`,
+          );
+
+          cell.append(mount, link);
+          tiles.appendChild(cell);
+
+          createRoot(mount).render(
+            createElement(MetricTile, {
+              containerId: container.id,
+              name: container.lxd_name,
+              state: container.lxd_status,
+              ramAllocatedMb: container.limit_ram_mb,
+              diskAllocatedGb: container.limit_disk_gb,
+            }),
+          );
+        }
+      }
+
+      /**
+       * Load and render the containers assigned to the signed-in user.
+       *
+       * THIS PAGE DELIBERATELY DOES NO CLIENT-SIDE FILTERING: the backend
+       * already scopes GET /api/containers to the caller's own assignments
+       * (Step 7.1), so the response *is* "my containers". Filtering again here
+       * would put a copy of an authorization rule in the one place the user
+       * fully controls — and the moment the two copies disagree, the browser's
+       * version is the one that looks authoritative while being worthless.
+       * Server-side scoping is the whole point of doing authorization there.
+       */
+      async function loadMyContainers(): Promise<void> {
+        try {
+          const list =
+            await apiFetch<ContainerListResponse>("/api/containers");
+
+          listLoading.hidden = true;
+
+          if (list.containers.length === 0) {
+            // Explicit empty state: a bare heading with nothing under it reads
+            // as "still loading" or "broken" rather than "you have none yet",
+            // and this is the state a newly invited user starts in.
+            listEmpty.hidden = false;
+          } else {
+            tiles.hidden = false;
+            renderTiles(list.containers);
+          }
+        } catch (err) {
+          // Scoped to this section, not the page: the identity line above is
+          // already correct and useful, so a list failure should not blank it.
+          listLoading.hidden = true;
+          listError.textContent =
+            err instanceof ApiError
+              ? `Could not load your containers (${err.status}): ${err.message}`
+              : "Could not reach the server to load your containers.";
+          listError.hidden = false;
+        }
+      }
 
       try {
         const me = await apiFetch<MeResponse>("/api/auth/me");
@@ -68,6 +233,16 @@ import SiteHeader from "../components/SiteHeader.astro";
 
         loading.hidden = true;
         app.hidden = false;
+
+        // The role decides which branch is shown, not what the user is allowed
+        // to fetch — the backend decides that. Both branches would still be
+        // safe if this comparison were wrong; they would just be confusing.
+        if (me.role === "admin") {
+          adminView.hidden = false;
+        } else {
+          userView.hidden = false;
+          await loadMyContainers();
+        }
       } catch (err) {
         // 401 is the expected "not signed in" answer, so it redirects rather
         // than showing an error. `replace` keeps /login out of history: using
@@ -85,5 +260,125 @@ import SiteHeader from "../components/SiteHeader.astro";
         }
       }
     </script>
+
+    <style>
+      main {
+        font-family: system-ui, sans-serif;
+        max-width: 60rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+
+      h1 {
+        font-size: 1.4rem;
+      }
+
+      h2 {
+        font-size: 1.1rem;
+        margin: 2rem 0 0.75rem;
+      }
+
+      #loading {
+        font-family: system-ui, sans-serif;
+        max-width: 60rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+
+      #containers-error {
+        color: #a12;
+      }
+
+      #containers-empty {
+        color: #555;
+        max-width: 34rem;
+      }
+
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+        gap: 1rem;
+      }
+
+      /* `hidden` alone does not hide a grid: an author `display` value outranks
+         the UA stylesheet's [hidden] { display: none }, so the empty grid would
+         still occupy layout. Written as .tiles[hidden] rather than a bare
+         [hidden] because Astro leaves a lone attribute selector unscoped and
+         emits it globally. */
+      .tiles[hidden] {
+        display: none;
+      }
+
+      /* Each cell stacks its tile and the tile's detail link, so the links line
+         up along the bottom of the row instead of floating mid-card. */
+      .cell {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      .detail-link {
+        font-size: 0.85rem;
+        color: #06c;
+      }
+
+      .detail-link:focus-visible {
+        outline: 3px solid #0b3d91;
+        outline-offset: 2px;
+      }
+
+      /* Tile internals are styled here rather than in MetricTile.tsx because
+         the component renders plain semantic markup and carries no styles of
+         its own, so each page controls how its tiles look. */
+      :global(.tile) {
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        padding: 0.75rem 1rem;
+        /* Fills its cell so neighbouring tiles in a row match height even when
+           one of them is showing an extra status line. */
+        height: 100%;
+        box-sizing: border-box;
+      }
+
+      :global(.tile header) {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.5rem;
+      }
+
+      :global(.tile h3) {
+        margin: 0;
+        font-size: 1rem;
+        overflow-wrap: anywhere;
+      }
+
+      :global(.tile .state) {
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      :global(.tile dl) {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.15rem 0.75rem;
+        margin: 0.75rem 0 0;
+        font-size: 0.9rem;
+      }
+
+      :global(.tile dt) {
+        color: #555;
+      }
+
+      :global(.tile dd) {
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      :global(.tile .error) {
+        color: #a12; /* Warning stays readable against the tile background. */
+        font-size: 0.85rem;
+      }
+    </style>
   </body>
 </html>

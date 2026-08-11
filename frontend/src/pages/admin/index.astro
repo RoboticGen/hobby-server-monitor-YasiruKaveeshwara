@@ -87,13 +87,38 @@ import SiteHeader from "../../components/SiteHeader.astro";
        * Mounting is imperative because the list is only known at runtime —
        * Astro's `client:` directives resolve at build time, when the
        * container set does not exist yet.
+       *
+       * Each tile gets a link to that container's detail page (history and
+       * terminal). The link is a sibling of the tile, not a wrapper around it:
+       * the tile refreshes itself every 10 seconds and carries its own status
+       * text, and a live region inside a link makes for a link whose
+       * accessible name keeps changing under the reader.
        */
       function renderTiles(containers: ContainerRecord[]): void {
         tiles.replaceChildren();
 
         for (const container of containers) {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+
           const mount = document.createElement("div");
-          tiles.appendChild(mount);
+
+          const link = document.createElement("a");
+          // Query string rather than a path segment because the detail route is
+          // a single static shell — see the comment at the top of
+          // pages/containers/[id].astro for why static output forces that.
+          link.href = `/containers/view/?container=${encodeURIComponent(container.id)}`;
+          link.className = "detail-link";
+          link.textContent = "History and terminal →";
+          // The visible text repeats across every card, so the accessible name
+          // says which container it belongs to.
+          link.setAttribute(
+            "aria-label",
+            `History and terminal for ${container.lxd_name}`,
+          );
+
+          cell.append(mount, link);
+          tiles.appendChild(cell);
 
           createRoot(mount).render(
             createElement(MetricTile, {
@@ -194,6 +219,34 @@ import SiteHeader from "../../components/SiteHeader.astro";
         gap: 1rem;
       }
 
+      /* `hidden` alone does not hide a grid: an author `display` value outranks
+         the UA stylesheet's [hidden] { display: none }, so the empty grid would
+         still occupy layout. Harmless while the grid is empty — which is the
+         only time it is hidden — but wrong the moment that stops being true.
+         Written as .tiles[hidden] rather than a bare [hidden] because Astro
+         leaves a lone attribute selector unscoped and emits it globally. */
+      .tiles[hidden] {
+        display: none;
+      }
+
+      /* Each cell stacks its tile and the tile's detail link, so the links line
+         up along the bottom of the row instead of floating mid-card. */
+      .cell {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      .detail-link {
+        font-size: 0.85rem;
+        color: #06c;
+      }
+
+      .detail-link:focus-visible {
+        outline: 3px solid #0b3d91;
+        outline-offset: 2px;
+      }
+
       /* Tile internals are styled here rather than in MetricTile.tsx because
          the component renders plain semantic markup and carries no styles of
          its own, so each page controls how its tiles look. */
@@ -201,6 +254,10 @@ import SiteHeader from "../../components/SiteHeader.astro";
         border: 1px solid #d0d0d0;
         border-radius: 6px;
         padding: 0.75rem 1rem;
+        /* Fills its cell so neighbouring tiles in a row match height even when
+           one of them is showing an extra status line. */
+        height: 100%;
+        box-sizing: border-box;
       }
 
       :global(.tile header) {
