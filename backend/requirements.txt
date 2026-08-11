@@ -1,9 +1,19 @@
-# Pin versions once you've chosen them. Suggested (not required) starting
-# points from the task brief's preferred stack:
-#
-# falcon
-# pylxd
-# tinyflux
-#
-# Add whatever else your implementation needs (OAuth client, WSGI/ASGI
-# server, etc.) and remove this comment block.
+# Backend dependencies for Hobby Server Monitor.
+# Minimum version constraints only — exact pinning deferred until all
+# packages are confirmed working together in a later phase.
+
+falcon>=4.0
+pylxd
+# Pinned, not floated. 1.2.0 leaves its time index stale after remove()
+# follows an out-of-order insert, and tsdb/store.py:remove_points works
+# around it. An upgrade could fix the defect (making the workaround
+# harmless but pointless) or change its shape (making it wrong), so the
+# version moves only alongside the characterisation test in
+# test_pipeline.py::TestTinyFluxIndexBehaviour.
+tinyflux==1.2.0
+PyJWT
+google-auth
+requests
+python-dotenv
+waitress
+pytest
