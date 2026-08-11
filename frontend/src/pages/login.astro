@@ -1,0 +1,68 @@
+---
+// Entry point for signing in. The only thing this page does is hand the
+// browser off to the backend, which in turn redirects to Google.
+//
+// The backend base URL is read straight from the environment here rather than
+// through src/lib/api.ts: that module exists to wrap `fetch`, and this page
+// deliberately does not fetch (see the comment on the link below). The
+// fallback matches api.ts so dev works with no .env file present.
+const apiBaseUrl: string =
+  import.meta.env.PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+
+const loginUrl = `${apiBaseUrl}/api/auth/google/login`;
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Sign in</title>
+  </head>
+  <body>
+    <main>
+      <h1>Sign in</h1>
+      <p>Use your Google account to access the server monitor.</p>
+
+      {/*
+        A plain <a href>, not a button calling apiFetch. The backend answers
+        this route with a 302 to Google's consent screen, and only a top-level
+        navigation can follow that: the browser has to actually leave our
+        origin so the user sees Google's own page and Google can set its
+        cookies on its own domain. A fetch would follow the redirect inside
+        JavaScript, where the cross-origin response is unreadable and no
+        navigation ever happens, so the user would sit on a page that appears
+        to do nothing. This is also why the URL points at the backend's origin
+        rather than a frontend route.
+      */}
+      <a class="signin" href={loginUrl}>Sign in with Google</a>
+    </main>
+
+    <style>
+      main {
+        font-family: system-ui, sans-serif;
+        max-width: 24rem;
+        margin: 4rem auto;
+        padding: 0 1rem;
+      }
+
+      .signin {
+        display: inline-block;
+        margin-top: 1rem;
+        padding: 0.6rem 1.2rem;
+        border: 1px solid #1a73e8;
+        border-radius: 4px;
+        background: #1a73e8;
+        color: #fff;
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      /* Keyboard focus must stay visible: this link is the only control on
+         the page, so losing the focus ring would strand keyboard users. */
+      .signin:focus-visible {
+        outline: 3px solid #0b3d91;
+        outline-offset: 2px;
+      }
+    </style>
+  </body>
+</html>

@@ -30,3 +30,4 @@ Thumbs.db
 frontend/AGENTS.md
 frontend/CLAUDE.md
 frontend/.vscode
+.claude/settings.local.json
