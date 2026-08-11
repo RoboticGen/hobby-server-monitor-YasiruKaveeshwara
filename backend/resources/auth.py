@@ -11,6 +11,7 @@ queries. These four endpoints are the only auth-related entry points:
 """
 
 from datetime import datetime, timedelta, timezone
+import logging
 
 import falcon
 
@@ -21,12 +22,19 @@ from backend.auth.jwt_utils import (
     hash_refresh_token,
 )
 from backend.auth.oauth import (
+    TokenExchangeError,
     build_google_auth_url,
     exchange_code_for_tokens,
     verify_and_decode_id_token,
 )
 from backend.config import config
 from backend.db import repo
+
+# Module-level logger, matching the collector's convention. The OAuth failure
+# paths below are the only place in this app where the cause of a failure is
+# known solely to the server: the browser is mid-redirect from Google and
+# cannot be shown provider detail, so without a log line the reason is lost.
+log = logging.getLogger(__name__)
 
 # Refresh tokens last 7 days before the user must re-authenticate.
 _REFRESH_TOKEN_LIFETIME_DAYS = 7
@@ -106,23 +114,61 @@ class GoogleCallbackResource:
                 "Please try signing in again.",
             )
 
-        # Exchange the authorization code for tokens from Google
+        # Exchange the authorization code for tokens from Google.
+        #
+        # The failure is logged with Google's own error code because that code
+        # is the diagnosis: 'invalid_client' means the client secret is wrong,
+        # 'invalid_grant' means the code was already redeemed or has expired
+        # (reloading this callback URL does exactly that), 'network_error'
+        # means the request never left the host. The browser only gets the
+        # code, not Google's full description, which keeps provider detail in
+        # the log where it belongs.
         try:
             tokens = exchange_code_for_tokens(code)
-        except Exception:
+        except TokenExchangeError as exc:
+            log.error(
+                "Google token exchange failed: error=%s http_status=%s detail=%s",
+                exc.error,
+                exc.status,
+                exc.description,
+            )
             raise falcon.HTTPBadRequest(
                 title="Token exchange failed",
-                description="Could not exchange the authorization code. "
-                "It may have expired — please try signing in again.",
+                description=f"Google rejected the authorization code "
+                f"({exc.error}). Check the backend log for details, then "
+                "try signing in again.",
             )
 
-        # Verify the ID token and extract the user's verified email
+        # Google only returns an ID token when the 'openid' scope was granted.
+        # Checked explicitly rather than letting the subscript below raise a
+        # KeyError, so a missing token is reported as the distinct problem it
+        # is instead of being blamed on verification.
+        if "id_token" not in tokens:
+            log.error(
+                "Google token response contained no id_token: keys=%s",
+                sorted(tokens),
+            )
+            raise falcon.HTTPBadRequest(
+                title="Invalid token response",
+                description="Google's response did not include an ID token. "
+                "Check that the 'openid' scope is being requested.",
+            )
+
+        # Verify the ID token and extract the user's verified email.
+        #
+        # google-auth's message is echoed to the browser as well as logged,
+        # because it names the cause precisely ("Token used too early …",
+        # "Token has wrong audience …") and none of those messages carry a
+        # secret — the client ID they may mention is already visible in the
+        # browser's own address bar during this flow.
         try:
             claims = verify_and_decode_id_token(tokens["id_token"])
-        except (ValueError, KeyError):
+        except ValueError as exc:
+            log.error("Google ID token verification failed: %s", exc)
             raise falcon.HTTPBadRequest(
                 title="Invalid ID token",
-                description="The token from Google could not be verified.",
+                description=f"The token from Google could not be verified: "
+                f"{str(exc)[:300]}",
             )
 
         email = claims.get("email", "").lower().strip()
@@ -184,8 +230,7 @@ class GoogleCallbackResource:
         refresh_token = generate_refresh_token()
         refresh_hash = hash_refresh_token(refresh_token)
         expires_at = (
-            datetime.now(timezone.utc)
-            + timedelta(days=_REFRESH_TOKEN_LIFETIME_DAYS)
+            datetime.now(timezone.utc) + timedelta(days=_REFRESH_TOKEN_LIFETIME_DAYS)
         ).isoformat()
 
         repo.create_session(

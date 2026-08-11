@@ -6,7 +6,9 @@ resources. This is the single place where the app's component graph is
 built — no route registration happens anywhere else.
 """
 
-from wsgiref.simple_server import make_server
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIServer, make_server
+import logging
 
 import falcon
 
@@ -32,6 +34,26 @@ from backend.resources.metrics import (
 )
 from backend.resources.terminal import ContainerExecResource
 from backend.resources.users import UserDetailResource, UserListResource
+
+
+class _ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
+    """Dev server that handles each connection on its own thread.
+
+    wsgiref's stock WSGIServer serves one connection at a time and does not
+    hang up on an idle keep-alive connection. A browser holds its connection
+    open after loading a page, so the next request queues behind it and never
+    gets served — the tab just spins.
+
+    That shows up first on GET /api/auth/google/login, because it is a
+    top-level navigation on a fresh connection rather than an XHR that
+    completes and frees its socket, and because its handler only builds a
+    redirect string, so a hang there cannot be the handler's own fault.
+
+    daemon_threads=True so a parked browser connection cannot keep the
+    process alive after Ctrl-C.
+    """
+
+    daemon_threads = True
 
 
 def _handle_write_lock_timeout(req, resp, ex, params):
@@ -134,14 +156,25 @@ def create_app() -> falcon.App:
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------
-    # Development-only server using Python's built-in wsgiref.
-    # Production deployments use waitress-serve under systemd (Phase 24),
-    # which provides proper process management and worker handling.
+    # Development-only server using Python's built-in wsgiref, with the
+    # threading server class above — the stock one serialises connections
+    # and deadlocks against browser keep-alive. Production deployments use
+    # waitress-serve under systemd (Phase 24), which is threaded already.
     # This block exists solely for quick local iteration during dev.
     # -----------------------------------------------------------------
     app = create_app()
+
+    # Without this, logging defaults to WARNING on the root logger with no
+    # handler configured, so the log.error() calls in resources/auth.py that
+    # carry Google's OAuth failure reason would be discarded — and that reason
+    # exists nowhere else. Same format as the collector, for greppable output.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
     print(f"[dev] Starting Falcon on 0.0.0.0:{config.port} ...")
-    with make_server("0.0.0.0", config.port, app) as httpd:
+    with make_server("0.0.0.0", config.port, app, _ThreadedWSGIServer) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
