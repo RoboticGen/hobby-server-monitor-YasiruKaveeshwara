@@ -15,6 +15,11 @@ from backend.auth.middleware import require_role
 from backend.db import repo
 from backend.lxd import client as lxd_client
 from backend.lxd.quota import check_quota
+from backend.resources.validation import (
+    require_object,
+    validate_limits,
+    validate_string,
+)
 
 # LXD container naming rules: lowercase alphanumeric + hyphens,
 # must start with a letter, must not end with a hyphen, 1-63 chars.
@@ -96,10 +101,14 @@ class ContainerListResource:
         """
         require_role(req, "admin")
 
-        body = req.get_media()
+        body = require_object(req.get_media())
 
         # --- Validate container name ---
-        name = body.get("name", "").strip()
+        # required=False so a missing or null name falls through to the
+        # "Invalid container name" message below, which says more than
+        # "must be a string". A non-string name is a different mistake and
+        # gets its own 400.
+        name = validate_string(body.get("name"), "name", required=False)
         # Server-side re-validation of the container name against LXD
         # naming rules. The frontend form may also validate this, but
         # that is a UX nicety only — an attacker can craft requests
@@ -121,7 +130,10 @@ class ContainerListResource:
                 description=f"A container named '{name}' already exists.",
             )
 
-        image = body.get("image", "").strip()
+        # The empty default keeps the existing behaviour of letting a
+        # missing image fall through to the "Missing image" message; a
+        # non-string image gets its own 400.
+        image = validate_string(body.get("image"), "image", required=False)
         if not image:
             raise falcon.HTTPBadRequest(
                 title="Missing image",
@@ -129,13 +141,19 @@ class ContainerListResource:
             )
 
         # Parse resource limits from the request body
-        limits_body = body.get("limits", {})
-        ram_mb = int(limits_body.get("ram_mb", 0))
-        cpu = float(limits_body.get("cpu", 0))
-        disk_gb = int(limits_body.get("disk_gb", 0))
+        # 0 means unlimited, so a missing key and an explicit 0 agree.
+        ram_mb, cpu, disk_gb = validate_limits(
+            body.get("limits", {}),
+            defaults={"ram_mb": 0, "cpu": 0.0, "disk_gb": 0},
+        )
 
         # If pre-assigning to a user, check their quota first
         assign_to = body.get("assign_to")
+        if assign_to is not None and not isinstance(assign_to, str):
+            raise falcon.HTTPBadRequest(
+                title="Invalid assign_to",
+                description="'assign_to' must be a user id string.",
+            )
         if assign_to:
             target_user = repo.get_user_by_id(assign_to)
             if not target_user:
@@ -172,14 +190,22 @@ class ContainerListResource:
             )
 
         # Record the container in our database with cached limits
-        container_id = repo.create_container_record(
-            lxd_name=name,
-            image=image,
-            created_by=req.context.user["id"],
-            limit_ram_mb=ram_mb,
-            limit_cpu=cpu,
-            limit_disk_gb=disk_gb,
-        )
+        try:
+            container_id = repo.create_container_record(
+                lxd_name=name,
+                image=image,
+                created_by=req.context.user["id"],
+                limit_ram_mb=ram_mb,
+                limit_cpu=cpu,
+                limit_disk_gb=disk_gb,
+            )
+        except repo.DuplicateKeyError:
+            # Same window as the invite race: the name check above cannot
+            # close it, so the UNIQUE constraint is what actually decides.
+            raise falcon.HTTPConflict(
+                title="Container name already exists",
+                description=f"A container named '{name}' already exists.",
+            )
 
         # Pre-assign to user if requested
         if assign_to:
@@ -242,7 +268,7 @@ class ContainerDetailResource:
                 description="This container has been deleted.",
             )
 
-        body = req.get_media()
+        body = require_object(req.get_media())
         action = body.get("action")
         limits = body.get("limits")
 
@@ -295,9 +321,16 @@ class ContainerDetailResource:
             return
 
         # --- Limit change ---
-        new_ram = int(limits.get("ram_mb", container["limit_ram_mb"]))
-        new_cpu = float(limits.get("cpu", container["limit_cpu"]))
-        new_disk = int(limits.get("disk_gb", container["limit_disk_gb"]))
+        # Missing keys default to the container's current limits, so a
+        # partial body changes only what it names.
+        new_ram, new_cpu, new_disk = validate_limits(
+            limits,
+            defaults={
+                "ram_mb": container["limit_ram_mb"],
+                "cpu": container["limit_cpu"],
+                "disk_gb": container["limit_disk_gb"],
+            },
+        )
 
         # Quota check uses the DELTA (new - old), not the absolute new
         # value, because the user's quota is against their total allocation
@@ -306,19 +339,30 @@ class ContainerDetailResource:
         delta_cpu = new_cpu - container["limit_cpu"]
         delta_disk = new_disk - container["limit_disk_gb"]
 
-        # Only check quota if limits are increasing (decreasing always OK)
+        # Only check quota if limits are increasing (decreasing always OK).
+        #
+        # The check runs against every user the container is assigned to,
+        # not against container["created_by"]. The creator is the admin who
+        # made it, and admins are typically unlimited, so checking them
+        # meant the check never fired: grant a small container, then grow
+        # it, and the assignee's quota was bypassed entirely. Grant-time
+        # enforcement in assignments.py checks the grantee; this has to
+        # match, or the two paths disagree about who the limits belong to.
         if delta_ram > 0 or delta_cpu > 0 or delta_disk > 0:
-            allowed, reason = check_quota(
-                container["created_by"],
-                max(delta_ram, 0),
-                max(delta_cpu, 0.0),
-                max(delta_disk, 0),
-            )
-            if not allowed:
-                raise falcon.HTTPBadRequest(
-                    title="Quota exceeded",
-                    description=reason,
+            for assignee in repo.list_assignees(container_id):
+                allowed, reason = check_quota(
+                    assignee["id"],
+                    max(delta_ram, 0),
+                    max(delta_cpu, 0.0),
+                    max(delta_disk, 0),
                 )
+                if not allowed:
+                    raise falcon.HTTPBadRequest(
+                        title="Quota exceeded",
+                        description=(
+                            f"{assignee['email']}: {reason}"
+                        ),
+                    )
 
         # Build LXD config from new limits
         lxd_limits = {}

@@ -67,29 +67,49 @@ class AssignmentResource:
                 description="This container has been deleted and cannot be assigned.",
             )
 
-        # Check if already assigned (active assignment)
-        if repo.user_has_access(user_id, container_id):
-            raise falcon.HTTPConflict(
-                title="Already assigned",
-                description=f"User '{user_id}' already has access to "
-                f"container '{container_id}'.",
-            )
+        # The duplicate check, the quota check, and the insert all run
+        # inside one BEGIN IMMEDIATE transaction. Splitting them lets two
+        # concurrent grants both read the same pre-grant allocation, both
+        # conclude they fit, and both insert — so a quota that bounds each
+        # request individually bounds nothing under load. The write lock
+        # makes the second caller wait for the first to commit, so it reads
+        # the total including that grant.
+        with repo.transaction() as conn:
+            # Re-read inside the transaction: the container's limits may
+            # have changed between the checks above and this lock.
+            container = repo.get_container_by_id(container_id, conn=conn)
+            if container is None or container["deleted_at"] is not None:
+                raise falcon.HTTPGone(
+                    title="Container deleted",
+                    description="This container has been deleted and cannot "
+                    "be assigned.",
+                )
 
-        # Quota check: adding this container's cached limits to the
-        # user's current allocation must not exceed their quota.
-        allowed, reason = check_quota(
-            user_id,
-            additional_ram_mb=container["limit_ram_mb"],
-            additional_cpu=container["limit_cpu"],
-            additional_disk_gb=container["limit_disk_gb"],
-        )
-        if not allowed:
-            raise falcon.HTTPBadRequest(
-                title="Quota exceeded",
-                description=reason,
-            )
+            if repo.user_has_access(user_id, container_id, conn=conn):
+                raise falcon.HTTPConflict(
+                    title="Already assigned",
+                    description=f"User '{user_id}' already has access to "
+                    f"container '{container_id}'.",
+                )
 
-        assignment_id = repo.assign_container(user_id, container_id)
+            # Quota check: adding this container's cached limits to the
+            # user's current allocation must not exceed their quota.
+            allowed, reason = check_quota(
+                user_id,
+                additional_ram_mb=container["limit_ram_mb"],
+                additional_cpu=container["limit_cpu"],
+                additional_disk_gb=container["limit_disk_gb"],
+                conn=conn,
+            )
+            if not allowed:
+                raise falcon.HTTPBadRequest(
+                    title="Quota exceeded",
+                    description=reason,
+                )
+
+            assignment_id = repo.assign_container(
+                user_id, container_id, conn=conn
+            )
 
         # Audit trail: access grants are security-sensitive operations
         # that must leave a trail so admins can trace who was given

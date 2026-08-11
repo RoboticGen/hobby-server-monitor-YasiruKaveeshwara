@@ -11,6 +11,27 @@ import falcon
 from backend.auth.middleware import require_role
 from backend.db import repo
 from backend.lxd.quota import compute_user_allocation
+from backend.resources.validation import (
+    require_object,
+    validate_non_negative_number,
+)
+
+
+def _email_from_body(body) -> str:
+    """Read and validate the email field, or raise HTTPBadRequest."""
+    email = body.get("email")
+    if not isinstance(email, str):
+        raise falcon.HTTPBadRequest(
+            title="Invalid email",
+            description="Email must be a string.",
+        )
+    email = email.strip().lower()
+    if not email or "@" not in email:
+        raise falcon.HTTPBadRequest(
+            title="Invalid email",
+            description="A valid email address is required.",
+        )
+    return email
 
 
 class UserListResource:
@@ -55,14 +76,9 @@ class UserListResource:
         """
         require_role(req, "admin")
 
-        body = req.get_media()
+        body = require_object(req.get_media())
 
-        email = body.get("email", "").strip().lower()
-        if not email or "@" not in email:
-            raise falcon.HTTPBadRequest(
-                title="Invalid email",
-                description="A valid email address is required.",
-            )
+        email = _email_from_body(body)
 
         # Check if user already exists
         if repo.get_user_by_email(email):
@@ -72,24 +88,40 @@ class UserListResource:
             )
 
         role = body.get("role", "user")
-        if role not in ("admin", "user"):
+        if not isinstance(role, str) or role not in ("admin", "user"):
             raise falcon.HTTPBadRequest(
                 title="Invalid role",
                 description="Role must be 'admin' or 'user'.",
             )
 
-        quota_ram_mb = int(body.get("quota_ram_mb", 0))
-        quota_cpu = float(body.get("quota_cpu", 0.0))
-        quota_disk_gb = int(body.get("quota_disk_gb", 0))
-
-        user_id = repo.create_user(
-            email=email,
-            role=role,
-            status="invited",
-            quota_ram_mb=quota_ram_mb,
-            quota_cpu=quota_cpu,
-            quota_disk_gb=quota_disk_gb,
+        quota_ram_mb = validate_non_negative_number(
+            body.get("quota_ram_mb", 0), "quota_ram_mb", int
         )
+        quota_cpu = validate_non_negative_number(
+            body.get("quota_cpu", 0.0), "quota_cpu", float
+        )
+        quota_disk_gb = validate_non_negative_number(
+            body.get("quota_disk_gb", 0), "quota_disk_gb", int
+        )
+
+        try:
+            user_id = repo.create_user(
+                email=email,
+                role=role,
+                status="invited",
+                quota_ram_mb=quota_ram_mb,
+                quota_cpu=quota_cpu,
+                quota_disk_gb=quota_disk_gb,
+            )
+        except repo.DuplicateKeyError:
+            # The pre-check above cannot close the window: two concurrent
+            # invites for one address both pass it, and only the UNIQUE
+            # constraint separates them. The loser must be told 409, not
+            # be handed a 500 that looks like the server broke.
+            raise falcon.HTTPConflict(
+                title="User already exists",
+                description=f"A user with email '{email}' already exists.",
+            )
 
         # Audit trail for user invitation
         repo.write_audit_log(
@@ -132,7 +164,7 @@ class UserDetailResource:
                 description=f"No user with id '{user_id}'.",
             )
 
-        body = req.get_media()
+        body = require_object(req.get_media())
 
         # Extract only the fields that are allowed to be updated
         updates = {}
@@ -152,9 +184,14 @@ class UserDetailResource:
                 )
             updates["status"] = body["status"]
 
-        for field in ("quota_ram_mb", "quota_cpu", "quota_disk_gb"):
+        _QUOTA_KINDS = {
+            "quota_ram_mb": int, "quota_cpu": float, "quota_disk_gb": int,
+        }
+        for field, kind in _QUOTA_KINDS.items():
             if field in body:
-                updates[field] = body[field]
+                updates[field] = validate_non_negative_number(
+                    body[field], field, kind
+                )
 
         if not updates:
             raise falcon.HTTPBadRequest(
@@ -162,23 +199,30 @@ class UserDetailResource:
                 description="Provide at least one field to update.",
             )
 
-        # Safety check: prevent demoting the last admin, which would
-        # lock everyone out of admin operations permanently.
-        # We count OTHER active admins (excluding the one being demoted).
-        # If there are none, this demotion would remove the last admin.
-        if updates.get("role") == "user" and user["role"] == "admin":
-            other_active_admins = sum(
-                1 for u in repo.list_users()
-                if u["id"] != user_id
-                and u["role"] == "admin"
-                and u["status"] == "active"
-            )
-            if other_active_admins == 0:
-                raise falcon.HTTPBadRequest(
-                    title="Cannot remove last admin",
-                    description="At least one active admin must remain. "
-                    "Promote another user to admin first.",
+        # Safety check: the system must always retain at least one usable
+        # admin, or nobody can administer it again without direct DB access.
+        #
+        # "Usable" means role='admin' AND status='active', so this guard has
+        # to fire on any change that breaks either half. Checking only
+        # role='user' left the status field as an unguarded route to the
+        # same outcome: revoking the last admin locked the system just as
+        # effectively as demoting them.
+        if user["role"] == "admin" and user["status"] == "active":
+            still_admin = updates.get("role", user["role"]) == "admin"
+            still_active = updates.get("status", user["status"]) == "active"
+            if not (still_admin and still_active):
+                other_active_admins = sum(
+                    1 for u in repo.list_users()
+                    if u["id"] != user_id
+                    and u["role"] == "admin"
+                    and u["status"] == "active"
                 )
+                if other_active_admins == 0:
+                    raise falcon.HTTPBadRequest(
+                        title="Cannot remove last admin",
+                        description="At least one active admin must remain. "
+                        "Promote another user to admin first.",
+                    )
 
         repo.update_user(user_id, **updates)
 

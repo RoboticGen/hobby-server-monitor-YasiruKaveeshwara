@@ -13,7 +13,6 @@ quota check is a read-then-write, so both are worth pinning down.
 """
 
 import sqlite3
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -69,25 +68,33 @@ class TestSchemaConstraints:
             conn.close()
 
     def test_duplicate_email_is_rejected(self, db_env):
-        """Email is the identity key from Google, so it must be unique."""
+        """Email is the identity key from Google, so it must be unique.
+
+        The constraint is still SQLite's UNIQUE index; repo.create_user
+        translates it into DuplicateKeyError so resources can map it to a 409
+        without importing sqlite3 or matching on driver strings.
+        """
         repo.create_user(
             email="int-dup@example.com", role="user", status="active",
             quota_ram_mb=1024, quota_cpu=1.0, quota_disk_gb=10,
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(repo.DuplicateKeyError) as exc_info:
             repo.create_user(
                 email="int-dup@example.com", role="user", status="active",
                 quota_ram_mb=1024, quota_cpu=1.0, quota_disk_gb=10,
             )
+        assert exc_info.value.column == "email"
+        assert exc_info.value.value == "int-dup@example.com"
 
     def test_duplicate_lxd_name_is_rejected(self, db_env):
         """Two DB rows pointing at one LXD container would corrupt accounting."""
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(repo.DuplicateKeyError) as exc_info:
             repo.create_container_record(
                 lxd_name="int-box", image="ubuntu:22.04",
                 created_by=db_env["admin_id"],
                 limit_ram_mb=256, limit_cpu=0.5, limit_disk_gb=2,
             )
+        assert exc_info.value.value == "int-box"
 
     @pytest.mark.parametrize("role", ["superuser", "root", "", "ADMIN"])
     def test_role_check_constraint_rejects_unknown_roles(self, db_env, role):
@@ -362,23 +369,10 @@ class TestConcurrency:
         assert sum(r.status_code == 201 for r in results) == 1, (
             "more than one caller was told it created the user"
         )
-        # What the losers are *told* is asserted separately below — it is
-        # currently wrong, and folding it in here would stop these two
-        # invariants (which do hold) from being checked at all.
+        # What the losers are *told* is asserted separately below — the
+        # duplicate race is B2, and that one is fixed; the losers must get a
+        # clean 409 Conflict.
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "FINDING: the loser of a duplicate-invite race gets a 500. "
-            "users.py:68 checks get_user_by_email and users.py:85 inserts, "
-            "with no transaction between them, so under concurrency the "
-            "UNIQUE constraint fires as a bare sqlite3.IntegrityError and "
-            "Falcon renders it as a 500. The row count stays correct, but "
-            "the caller cannot tell 'already invited' from 'the server is "
-            "broken' and a retry loop would hammer it. Wrap create_user in "
-            "try/except sqlite3.IntegrityError and raise HTTPConflict."
-        ),
-    )
     def test_duplicate_invite_race_reports_conflict_not_server_error(
         self, db_env
     ):
@@ -409,19 +403,17 @@ class TestConcurrency:
         purely a function of the race. Run once and asserted from two angles
         below: whether it crashed, and whether it over-allocated.
 
-        The interleaving is forced rather than hoped for. Firing four threads
-        and trusting the OS scheduler reproduced the race about nine runs in
-        ten; the tenth serialised by luck, the quota held, and the strict xfail
-        below turned that into a suite failure. A test that reports a defect
-        90% of the time is not evidence of anything.
+        No barrier here any more. While the grants interleaved (B1), this
+        fixture wrapped check_quota in a threading.Barrier to force the
+        interleaving, because trusting the scheduler reproduced the defect
+        only about nine runs in ten and the tenth failed the strict xfail.
+        The fix serialises the grants on SQLite's write lock, so four callers
+        can no longer reach that barrier at once — it would block until its
+        timeout and turn every run into a five-second wait.
 
-        So `check_quota` is wrapped with a barrier that releases only once all
-        four callers have finished their read. That is precisely the
-        interleaving the defect needs — every thread reads the pre-grant total,
-        every thread concludes it fits — and it makes the outcome deterministic
-        without touching production code. The barrier carries a timeout so a
-        future fix that serialises the grants (which is the point of B1) fails
-        the test rather than hanging the suite.
+        Four plain concurrent requests are now the right test: they assert
+        the lock holds under real contention rather than under a staged
+        interleaving.
         """
         user_id, _ = make_user("int-quota-race@example.com",
                                ram=1024, cpu=8.0, disk=80)
@@ -435,43 +427,21 @@ class TestConcurrency:
                 limit_cpu=0.5, limit_disk_gb=5,
             ))
 
-        from backend.resources import assignments as assignments_module
-
-        real_check_quota = assignments_module.check_quota
-        barrier = threading.Barrier(4)
-        timed_out = threading.Event()
-
-        def check_quota_then_wait(*args, **kwargs):
-            result = real_check_quota(*args, **kwargs)
-            try:
-                barrier.wait(timeout=5)
-            except threading.BrokenBarrierError:
-                # Fewer than four callers reached the check: the grants are
-                # being serialised upstream, so the race cannot be staged.
-                timed_out.set()
-            return result
-
         def grant(cid):
             return db_env["client"].simulate_post(
                 f"/api/users/{user_id}/containers/{cid}",
                 headers=db_env["admin"],
             )
 
-        patch = pytest.MonkeyPatch()
-        patch.setattr(assignments_module, "check_quota", check_quota_then_wait)
-        try:
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                results = [f.result() for f in
-                           [pool.submit(grant, c) for c in container_ids]]
-        finally:
-            patch.undo()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = [f.result() for f in
+                       [pool.submit(grant, c) for c in container_ids]]
 
         from backend.lxd.quota import compute_user_allocation
         return {
             "results": results,
             "granted": sum(r.status_code == 201 for r in results),
             "final_ram": compute_user_allocation(user_id)["ram_mb"],
-            "staged": not timed_out.is_set(),
         }
 
     def test_racing_grants_never_crash(self, quota_race):
@@ -481,38 +451,19 @@ class TestConcurrency:
             f"a racing grant produced a 5xx: {codes}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "FINDING: concurrent grants bust the quota. quota.py check_quota "
-            "is a read-then-write with no transaction spanning the two "
-            "halves, so four grants racing each read the same pre-grant "
-            "total and all four conclude they fit: 2048MB ends up allocated "
-            "against a 1024MB quota. The quota stops being an upper bound "
-            "under exactly the load it exists to bound. Fix by holding a "
-            "write transaction (BEGIN IMMEDIATE) across the read and the "
-            "insert, so the grants serialise. Note the fixture forces the "
-            "interleaving with a barrier at the quota check rather than "
-            "relying on the scheduler — unforced, this reproduced about nine "
-            "runs in ten, and the tenth XPASSed and failed the suite."
-        ),
-    )
     def test_concurrent_grants_cannot_exceed_quota(self, quota_race):
         """Parallel grants that individually fit must not collectively bust quota.
 
         With a 1024MB quota and four 512MB containers, at most two may be
-        granted no matter how the requests interleave.
+        granted no matter how the requests interleave. The grants serialise
+        on SQLite's write lock (B1), so the test asserts both sides of the
+        fix: every racing request must be serialised, and the quota must
+        survive the race.
         """
-        if not quota_race["staged"]:
-            # The barrier broke, so the four grants never overlapped in the
-            # quota check. Either they are serialised now (B1 fixed, and this
-            # marker should go) or the fixture no longer stages what it thinks
-            # it does. Both need a human, and neither is "the quota holds".
-            pytest.fail(
-                "the race could not be staged: fewer than four callers "
-                "reached the quota check concurrently, so this run proves "
-                "nothing about the quota under load"
-            )
+        assert quota_race["granted"] == 2, (
+            f"expected exactly two of four grants to succeed, got "
+            f"{quota_race['granted']}"
+        )
         assert quota_race["final_ram"] <= 1024, (
             f"quota busted under concurrency: {quota_race['granted']} grants "
             f"succeeded, leaving {quota_race['final_ram']}MB allocated "

@@ -273,27 +273,6 @@ class TestRetentionThroughTheApi:
         assert rolled[0].fields["cpu_pct"] == pytest.approx(50.0)
         assert rolled[0].fields["ram_used_mb"] == pytest.approx(512.0)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "FINDING: after a retention pass, a time-range query silently "
-            "under-reports. _downsample_and_prune writes back-dated rollup "
-            "points (out of time order) and then calls TinyFlux remove(); "
-            "remove() rebuilds the time index but leaves it wrong while "
-            "still flagging index.valid = True, so index-backed range "
-            "queries return a truncated slice. Minimal repro: one recent "
-            "point + one back-dated point + remove() is enough. reindex() "
-            "refuses to help ('Index already valid'); only "
-            "store.index.invalidate() or reopening the file recovers the "
-            "data. The points themselves are intact on disk — this is a "
-            "read-path defect, not data loss. Blast radius is limited to "
-            "the process that calls remove(), which is the collector "
-            "(retention.py is the only caller); the API process never "
-            "removes, so live chart reads are unaffected. Fix by calling "
-            "get_store().index.invalidate() after each remove() in "
-            "retention.py."
-        ),
-    )
     def test_rolled_up_points_are_readable_by_time_range(
         self, pipeline_env, aged_container
     ):
@@ -301,6 +280,12 @@ class TestRetentionThroughTheApi:
 
         query_range is what the history endpoint calls, so a point that
         exists but cannot be found by time range is invisible to the chart.
+
+        This is the app-level half of B7. The TinyFlux defect itself is still
+        real — see TestTinyFluxIndexBehaviour below, which characterises it
+        and stays xfail — but retention.py now goes through
+        tsdb.store.remove_points, which invalidates the stale index, so the
+        read path is correct again.
         """
         cid = aged_container["id"]
 

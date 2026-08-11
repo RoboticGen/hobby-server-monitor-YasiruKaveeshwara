@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from tinyflux import TagQuery, TimeQuery
 
 from backend.db import repo
-from backend.tsdb.store import get_store, write_point
+from backend.tsdb.store import get_store, remove_points, write_point
 
 log = logging.getLogger(__name__)
 
@@ -126,7 +126,10 @@ def _downsample_and_prune(
 
     # Delete the original source points now that they've been rolled up.
     # We remove them by matching the same query used to fetch them.
-    store.remove(
+    # remove_points, not store.remove: the back-dated writes above put the
+    # time index in the state where TinyFlux's remove() leaves it stale but
+    # flagged valid. See tsdb.store.remove_points.
+    remove_points(
         (Tag.container_id == container_id)
         & (Tag.resolution == source_resolution)
         & (Time < cutoff)
@@ -149,13 +152,12 @@ def _prune_old_points(container_id: str, now: datetime) -> None:
     regardless of resolution. This prevents unbounded growth of the
     TinyFlux CSV file over the months.
     """
-    store = get_store()
     Tag = TagQuery()
     Time = TimeQuery()
 
     cutoff = now - _ABSOLUTE_MAX_AGE
 
-    removed = store.remove(
+    removed = remove_points(
         (Tag.container_id == container_id)
         & (Time < cutoff)
     )

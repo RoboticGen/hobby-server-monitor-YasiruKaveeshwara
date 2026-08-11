@@ -284,62 +284,25 @@ class TestMalformedInput:
     """Bad request bodies must be 400s, never unhandled 500s."""
 
     # Each case uses a distinct container name. They previously shared
-    # "ok-box", which meant the negative-limit case (which wrongly succeeds)
+    # "ok-box", which meant the negative-limit case (which wrongly succeeded)
     # created it and every later case then short-circuited on the 409
     # duplicate-name check — passing without ever reaching the code they
     # were written to exercise.
-    _CRASHES_ON_BAD_TYPE = (
-        "FINDING: containers.py:102 calls body.get('name', '').strip() and "
-        "line 133 calls limits_body.get(...), so a JSON null, a non-string "
-        "name, or a non-object 'limits' raises AttributeError/ValueError and "
-        "surfaces as a 500. Malformed client input must be a 400. Falcon "
-        "will not coerce these; the handler has to type-check before use."
-    )
 
     @pytest.mark.parametrize(
         "body,label",
         [
             (None, "no body"),
             ({}, "empty object"),
-            pytest.param(
-                {"name": None, "image": None}, "null fields",
-                marks=pytest.mark.xfail(strict=True,
-                                        reason=_CRASHES_ON_BAD_TYPE),
-            ),
-            pytest.param(
-                {"name": 12345, "image": "ubuntu:22.04"}, "non-string name",
-                marks=pytest.mark.xfail(strict=True,
-                                        reason=_CRASHES_ON_BAD_TYPE),
-            ),
+            ({"name": None, "image": None}, "null fields"),
+            ({"name": 12345, "image": "ubuntu:22.04"}, "non-string name"),
             ({"name": "bad-no-image"}, "missing image"),
-            pytest.param(
-                {"name": "bad-limits-type", "image": "ubuntu:22.04",
-                 "limits": "not-an-object"}, "limits wrong type",
-                marks=pytest.mark.xfail(strict=True,
-                                        reason=_CRASHES_ON_BAD_TYPE),
-            ),
-            pytest.param(
-                {"name": "bad-negative", "image": "ubuntu:22.04",
-                 "limits": {"ram_mb": -512}}, "negative limit",
-                marks=pytest.mark.xfail(
-                    strict=True,
-                    reason=(
-                        "FINDING: a negative limit is accepted and the "
-                        "container is created (201). containers.py:133-135 "
-                        "casts with int()/float() and then only guards with "
-                        "`if ram_mb > 0`, so the value is silently dropped "
-                        "rather than rejected: the caller is told the "
-                        "container was created with the limits they asked "
-                        "for, and it is running with none at all."
-                    ),
-                ),
-            ),
-            pytest.param(
-                {"name": "bad-nonnumeric", "image": "ubuntu:22.04",
-                 "limits": {"ram_mb": "lots"}}, "non-numeric limit",
-                marks=pytest.mark.xfail(strict=True,
-                                        reason=_CRASHES_ON_BAD_TYPE),
-            ),
+            ({"name": "bad-limits-type", "image": "ubuntu:22.04",
+              "limits": "not-an-object"}, "limits wrong type"),
+            ({"name": "bad-negative", "image": "ubuntu:22.04",
+              "limits": {"ram_mb": -512}}, "negative limit"),
+            ({"name": "bad-nonnumeric", "image": "ubuntu:22.04",
+              "limits": {"ram_mb": "lots"}}, "non-numeric limit"),
         ],
     )
     def test_container_create_rejects_bad_bodies(self, env, body, label):

@@ -242,23 +242,13 @@ class TestPrivilegeBoundaries:
         )
         assert repo.get_user_by_id(tenants["admin_id"])["role"] == "admin"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "FINDING: the last-admin guard at users.py:169 only fires when "
-            "the PATCH sets role='user'. Setting status='revoked' on the "
-            "final admin bypasses it entirely and has the same effect — the "
-            "OAuth callback refuses revoked users, so once the 15-minute "
-            "access token expires nobody can perform an admin action again, "
-            "and no endpoint exists to undo it. The guard should cover both "
-            "fields."
-        ),
-    )
     def test_last_admin_cannot_be_revoked(self, tenants):
         """Same protection via the status field rather than the role field.
 
-        Asserts the intended behaviour. It currently fails, and the xfail
-        reason records why — see the finding above.
+        Revoking the final admin locks the system out exactly as demoting it
+        does — the OAuth callback refuses revoked users, so once the access
+        token expires nobody can perform an admin action again. The guard
+        covers both fields (B6).
         """
         admins = [
             u for u in repo.list_users()
@@ -281,7 +271,7 @@ class TestPrivilegeBoundaries:
                 repo.get_user_by_id(tenants["admin_id"])["status"] == "active"
             )
         finally:
-            # The PATCH succeeds today, so without this the module's admin
+            # Belt and braces: if the guard ever regresses, the module's admin
             # would stay revoked and every later test here would fail for an
             # unrelated reason.
             repo.update_user(tenants["admin_id"], status="active")
@@ -480,25 +470,12 @@ class TestQuotaEnforcementBoundaries:
         )
         assert result.status_code == 201
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "FINDING: raising limits on an assigned container checks the "
-            "quota of container['created_by'] (the admin) instead of the "
-            "users the container is assigned to. Since admins are typically "
-            "unlimited, an admin can push an assigned user arbitrarily far "
-            "past their quota through PATCH /api/containers/{id} without "
-            "the check ever firing. containers.py:311 should check every "
-            "active assignee, the way assignments.py:80 checks the grantee."
-        ),
-    )
     def test_limit_increase_respects_the_assignees_quota(self, tenants):
         """A limit raise must be checked against whoever holds the container.
 
         Grant-time enforcement is correct, so the only way to exceed a quota
-        is to grant a small container and then grow it. This asserts the
-        intended behaviour; it currently fails, and the xfail reason records
-        why.
+        was to grant a small container and then grow it. The PATCH handler
+        now checks every active assignee, not the creating admin (B5).
         """
         user_id, _ = make_user("sec-victim@example.com",
                                ram=1024, cpu=1.0, disk=10)

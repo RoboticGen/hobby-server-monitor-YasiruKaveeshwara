@@ -4,7 +4,13 @@
 
 falcon>=4.0
 pylxd
-tinyflux
+# Pinned, not floated. 1.2.0 leaves its time index stale after remove()
+# follows an out-of-order insert, and tsdb/store.py:remove_points works
+# around it. An upgrade could fix the defect (making the workaround
+# harmless but pointless) or change its shape (making it wrong), so the
+# version moves only alongside the characterisation test in
+# test_pipeline.py::TestTinyFluxIndexBehaviour.
+tinyflux==1.2.0
 PyJWT
 google-auth
 requests

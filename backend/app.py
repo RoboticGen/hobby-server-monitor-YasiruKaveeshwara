@@ -12,6 +12,7 @@ import falcon
 
 from backend.auth.middleware import AuthMiddleware
 from backend.config import config
+from backend.db import repo
 from backend.resources.accounting import AccountingResource
 from backend.resources.auth import (
     GoogleCallbackResource,
@@ -33,6 +34,15 @@ from backend.resources.terminal import ContainerExecResource
 from backend.resources.users import UserDetailResource, UserListResource
 
 
+def _handle_write_lock_timeout(req, resp, ex, params):
+    """Render repo.WriteLockTimeout as a retryable 503."""
+    raise falcon.HTTPServiceUnavailable(
+        title="Server busy",
+        description="The server is handling another change to this data. "
+        "Please retry.",
+    )
+
+
 def create_app() -> falcon.App:
     """Create and configure the Falcon WSGI application.
 
@@ -45,6 +55,13 @@ def create_app() -> falcon.App:
     # individual resource methods call require_role() or
     # require_container_access() to enforce their own requirements.
     app = falcon.App(middleware=[AuthMiddleware()])
+
+    # Contended writes are a capacity problem, not a bug. repo.transaction()
+    # serialises quota-critical writes on SQLite's write lock, so a caller
+    # that waits out the busy timeout has hit load, not a broken server —
+    # 503 tells it to retry, where a 500 would say "stop, this is broken".
+    # Registered centrally so no transactional endpoint can forget it.
+    app.add_error_handler(repo.WriteLockTimeout, _handle_write_lock_timeout)
 
     # --- Route registration ------------------------------------------
     # Each route is added in the phase that builds its resource class.

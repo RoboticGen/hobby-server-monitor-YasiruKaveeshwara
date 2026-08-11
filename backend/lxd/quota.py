@@ -17,21 +17,27 @@ operation.
 from backend.db import repo
 
 
-def compute_user_allocation(user_id: str) -> dict:
+def compute_user_allocation(user_id: str, conn=None) -> dict:
     """Sum RAM/CPU/disk across all containers actively assigned to a user.
 
     Reads limits from the DB-cached columns (not live LXD), so this
     function is fast and independent of LXD availability.
 
+    Pass `conn` to read inside a caller's transaction — a quota check that
+    authorises a write has to see the same snapshot the write lands in, or
+    two concurrent grants can both read a pre-grant total and both fit.
+
     Returns a dict with keys: ram_mb, cpu, disk_gb.
     """
-    assignments = repo.list_assignments_for_user(user_id)
+    assignments = repo.list_assignments_for_user(user_id, conn=conn)
     total_ram = 0
     total_cpu = 0.0
     total_disk = 0
 
     for assignment in assignments:
-        container = repo.get_container_by_id(assignment["container_id"])
+        container = repo.get_container_by_id(
+            assignment["container_id"], conn=conn
+        )
         # Skip containers that have been soft-deleted or can't be found
         if container is None or container["deleted_at"] is not None:
             continue
@@ -51,6 +57,7 @@ def check_quota(
     additional_ram_mb: int,
     additional_cpu: float,
     additional_disk_gb: int,
+    conn=None,
 ) -> tuple[bool, str]:
     """Check whether adding the given resources would stay within quota.
 
@@ -59,12 +66,15 @@ def check_quota(
     naming the exact resource and how much it would be exceeded by
     (hard block with the specific number, not a vague
     rejection, so the admin can see exactly what to adjust).
+
+    Pass `conn` when the answer is about to authorise a write, so the read
+    and the write share one transaction. See repo.transaction().
     """
-    user = repo.get_user_by_id(user_id)
+    user = repo.get_user_by_id(user_id, conn=conn)
     if user is None:
         return (False, "User not found")
 
-    current = compute_user_allocation(user_id)
+    current = compute_user_allocation(user_id, conn=conn)
 
     # Check each resource individually so the error message names the
     # specific resource that would be exceeded

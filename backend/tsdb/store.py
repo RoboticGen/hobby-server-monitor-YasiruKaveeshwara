@@ -73,6 +73,33 @@ def write_point(
     store.insert(point)
 
 
+def remove_points(query) -> int:
+    """Delete points matching a query and return how many were removed.
+
+    Wraps TinyFlux's remove() to work around a defect in 1.2.0: inserting a
+    point older than the newest one already stored invalidates the in-memory
+    time index (correctly), but a subsequent remove() rebuilds that index
+    from a partial view and marks it valid again. From then on, time-range
+    queries in this process are answered from an index that does not match
+    the file — silently returning too few points, or occasionally too many,
+    with the data itself intact on disk.
+
+    That is exactly the sequence retention performs: write a back-dated
+    rollup bucket, then remove the raw points it replaced.
+
+    invalidate() forces the next query to scan the file and rebuild
+    honestly. reindex() is not an alternative — it checks index.valid,
+    finds True, and returns without doing anything.
+
+    Every deletion goes through here rather than calling store.remove()
+    directly, so no caller has to remember the workaround.
+    """
+    store = get_store()
+    removed = store.remove(query)
+    store.index.invalidate()
+    return removed
+
+
 def query_range(
     container_id: str,
     start: datetime,

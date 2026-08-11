@@ -9,6 +9,7 @@ instances) so callers have no dependency on sqlite3 internals.
 
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from backend.config import config
@@ -23,6 +24,25 @@ _UPDATABLE_USER_FIELDS = {
     "role", "status", "quota_ram_mb", "quota_cpu", "quota_disk_gb",
 }
 
+# How long a writer waits for a competing write lock before giving up.
+# Grants serialise on that lock (see transaction()), so this is also the
+# ceiling on how long a queued request can sit behind another one.
+_BUSY_TIMEOUT_SECONDS = 5.0
+
+
+class DuplicateKeyError(Exception):
+    """A UNIQUE constraint rejected the insert.
+
+    Raised instead of letting sqlite3.IntegrityError escape, so callers can
+    map "this already exists" to a 409 without importing sqlite3 or matching
+    on driver error strings. Carries the column that collided.
+    """
+
+    def __init__(self, column: str, value: str):
+        self.column = column
+        self.value = value
+        super().__init__(f"{column} '{value}' already exists")
+
 
 def get_connection() -> sqlite3.Connection:
     """Open a connection to the application database with foreign keys enabled.
@@ -31,10 +51,80 @@ def get_connection() -> sqlite3.Connection:
     SQLite (it defaults to OFF), otherwise REFERENCES constraints are
     silently ignored and referential integrity is not enforced.
     """
-    conn = sqlite3.connect(str(config.database_path))
+    conn = sqlite3.connect(
+        str(config.database_path), timeout=_BUSY_TIMEOUT_SECONDS
+    )
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row  # allows column access by name
     return conn
+
+
+class WriteLockTimeout(Exception):
+    """Could not acquire the write lock within the busy timeout.
+
+    Distinct from a programming error: the database is fine, it was just
+    busy for longer than a caller should wait. Handlers map this to 503 so
+    the client retries rather than seeing a 500.
+    """
+
+
+@contextmanager
+def transaction():
+    """Yield a connection that holds a write lock for the whole block.
+
+    `BEGIN IMMEDIATE` takes SQLite's RESERVED lock up front rather than on
+    first write, so two callers running this block serialise instead of
+    interleaving. That is what makes a read-then-write decision safe: check
+    a quota and insert the row it authorised, and a second caller cannot
+    read the pre-insert total, because it waits for the first to commit.
+
+    Pass the yielded connection to the functions below via their `conn=`
+    parameter so every statement lands in this one transaction. Anything
+    raised inside the block rolls all of it back.
+    """
+    conn = get_connection()
+    # Autocommit mode. Left at the default, sqlite3 opens its own implicit
+    # transaction around the first write, which collides with the explicit
+    # BEGIN below.
+    conn.isolation_level = None
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            # No transaction was opened, so there is nothing to roll back —
+            # attempting one here raises "cannot rollback - no transaction
+            # is active" and buries the real cause.
+            if "locked" in str(exc) or "busy" in str(exc):
+                raise WriteLockTimeout(str(exc)) from exc
+            raise
+
+        try:
+            yield conn
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def _connection(existing: sqlite3.Connection | None):
+    """Reuse the caller's connection, or open and close a private one.
+
+    Functions that can take part in a caller's transaction accept an
+    optional `conn`. Given one, they join that transaction and leave the
+    commit to whoever opened it; given None, they keep the original
+    behaviour of one short-lived connection per call.
+    """
+    if existing is not None:
+        yield existing
+        return
+    conn = get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
@@ -64,6 +154,11 @@ def create_user(
 
     Called when an admin invites a user or when the bootstrap admin
     signs in for the first time.
+
+    Raises DuplicateKeyError if the email is already taken. Callers cannot
+    prevent that by checking first — two concurrent invites for one address
+    both pass the check and only the UNIQUE constraint separates them — so
+    the collision is reported as a normal outcome rather than an error.
     """
     user_id = str(uuid.uuid4())
     conn = get_connection()
@@ -78,6 +173,12 @@ def create_user(
              quota_disk_gb, _now_iso()),
         )
         conn.commit()
+    except sqlite3.IntegrityError as exc:
+        # email is the only UNIQUE column on this table; anything else
+        # failing the constraint is a genuine bug and should keep raising.
+        if "users.email" not in str(exc):
+            raise
+        raise DuplicateKeyError("email", email) from exc
     finally:
         conn.close()
     return user_id
@@ -95,16 +196,13 @@ def get_user_by_email(email: str) -> dict | None:
         conn.close()
 
 
-def get_user_by_id(user_id: str) -> dict | None:
+def get_user_by_id(user_id: str, conn: sqlite3.Connection | None = None) -> dict | None:
     """Look up a user by their UUID, returning None if not found."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
+    with _connection(conn) as db:
+        row = db.execute(
             "SELECT * FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         return _row_to_dict(row)
-    finally:
-        conn.close()
 
 
 def list_users() -> list[dict]:
@@ -242,21 +340,26 @@ def create_container_record(
              limit_ram_mb, limit_cpu, limit_disk_gb, _now_iso()),
         )
         conn.commit()
+    except sqlite3.IntegrityError as exc:
+        # Same shape as create_user: lxd_name is UNIQUE, and the caller's
+        # name check cannot close the window before the insert.
+        if "containers.lxd_name" not in str(exc):
+            raise
+        raise DuplicateKeyError("container name", lxd_name) from exc
     finally:
         conn.close()
     return container_id
 
 
-def get_container_by_id(container_id: str) -> dict | None:
+def get_container_by_id(
+    container_id: str, conn: sqlite3.Connection | None = None
+) -> dict | None:
     """Look up a container by its internal UUID."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
+    with _connection(conn) as db:
+        row = db.execute(
             "SELECT * FROM containers WHERE id = ?", (container_id,)
         ).fetchone()
         return _row_to_dict(row)
-    finally:
-        conn.close()
 
 
 def get_container_by_lxd_name(lxd_name: str) -> dict | None:
@@ -278,6 +381,29 @@ def list_active_containers() -> list[dict]:
         rows = conn.execute(
             "SELECT * FROM containers WHERE deleted_at IS NULL "
             "ORDER BY created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_assignees(container_id: str) -> list[dict]:
+    """Return the users a container is actively assigned to.
+
+    Used for quota checks on limit increases: raising a container's limits
+    must be checked against everyone it is assigned to, not just the admin
+    who created it.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT u.* FROM users u
+            JOIN assignments a ON a.user_id = u.id
+            WHERE a.container_id = ? AND a.active = 1
+            ORDER BY u.created_at
+            """,
+            (container_id,),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -352,12 +478,13 @@ def soft_delete_container(container_id: str) -> None:
 # =========================== Assignments ====================================
 
 
-def assign_container(user_id: str, container_id: str) -> str:
+def assign_container(
+    user_id: str, container_id: str, conn: sqlite3.Connection | None = None
+) -> str:
     """Grant a user access to a container and return the assignment UUID."""
     assignment_id = str(uuid.uuid4())
-    conn = get_connection()
-    try:
-        conn.execute(
+    with _connection(conn) as db:
+        db.execute(
             """
             INSERT INTO assignments (id, user_id, container_id, active,
                                      created_at)
@@ -365,9 +492,8 @@ def assign_container(user_id: str, container_id: str) -> str:
             """,
             (assignment_id, user_id, container_id, _now_iso()),
         )
-        conn.commit()
-    finally:
-        conn.close()
+        if conn is None:
+            db.commit()
     return assignment_id
 
 
@@ -393,36 +519,34 @@ def revoke_assignment(user_id: str, container_id: str) -> None:
         conn.close()
 
 
-def list_assignments_for_user(user_id: str) -> list[dict]:
+def list_assignments_for_user(
+    user_id: str, conn: sqlite3.Connection | None = None
+) -> list[dict]:
     """Return all active assignments for a given user."""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
+    with _connection(conn) as db:
+        rows = db.execute(
             "SELECT * FROM assignments WHERE user_id = ? AND active = 1 "
             "ORDER BY created_at",
             (user_id,),
         ).fetchall()
         return [dict(r) for r in rows]
-    finally:
-        conn.close()
 
 
-def user_has_access(user_id: str, container_id: str) -> bool:
+def user_has_access(
+    user_id: str, container_id: str, conn: sqlite3.Connection | None = None
+) -> bool:
     """Check whether a user has an active assignment to a container.
 
     Returns True only if there is at least one active assignment row
     linking this user to this container.
     """
-    conn = get_connection()
-    try:
-        row = conn.execute(
+    with _connection(conn) as db:
+        row = db.execute(
             "SELECT 1 FROM assignments "
             "WHERE user_id = ? AND container_id = ? AND active = 1",
             (user_id, container_id),
         ).fetchone()
         return row is not None
-    finally:
-        conn.close()
 
 
 # ============================= Audit Log ====================================
