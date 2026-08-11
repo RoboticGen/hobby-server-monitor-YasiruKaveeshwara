@@ -26,6 +26,11 @@
       <p id="error" role="alert" hidden></p>
       <p id="empty" hidden>No containers yet, create one below.</p>
       <div id="tiles" class="tiles" hidden></div>
+
+      <!-- Sits after the list because the empty state above points "below" to
+           it. Hidden until the caller is confirmed to be an admin, so a
+           non-admin never sees a create control the API would refuse. -->
+      <div id="form-mount" hidden></div>
     </main>
 
     <script>
@@ -33,6 +38,7 @@
       import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
       import MetricTile from "../../components/MetricTile";
+      import CreateContainerForm from "../../components/CreateContainerForm";
 
       /**
        * A container as returned by GET /api/containers: the DB row plus the
@@ -61,12 +67,65 @@
       const errorEl = document.getElementById("error") as HTMLElement;
       const empty = document.getElementById("empty") as HTMLElement;
       const tiles = document.getElementById("tiles") as HTMLElement;
+      const formMount = document.getElementById("form-mount") as HTMLElement;
 
       /** Show a message in the error slot and hide the spinner. */
       function fail(message: string): void {
         loading.hidden = true;
         errorEl.textContent = message;
         errorEl.hidden = false;
+      }
+
+      /**
+       * Draw one MetricTile island per container into the grid.
+       *
+       * Replaces the grid's contents rather than appending, so calling this
+       * again after a create does not duplicate every existing tile.
+       * Mounting is imperative because the list is only known at runtime —
+       * Astro's `client:` directives resolve at build time, when the
+       * container set does not exist yet.
+       */
+      function renderTiles(containers: ContainerRecord[]): void {
+        tiles.replaceChildren();
+
+        for (const container of containers) {
+          const mount = document.createElement("div");
+          tiles.appendChild(mount);
+
+          createRoot(mount).render(
+            createElement(MetricTile, {
+              containerId: container.id,
+              name: container.lxd_name,
+              state: container.lxd_status,
+              ramAllocatedMb: container.limit_ram_mb,
+              diskAllocatedGb: container.limit_disk_gb,
+            }),
+          );
+        }
+      }
+
+      /**
+       * Re-fetch the container list and repaint the page.
+       *
+       * Passed to the form as its onCreated callback: a new container has to
+       * come from the server, since only the backend knows the id and the
+       * live LXD status the tile needs.
+       */
+      async function refreshContainers(): Promise<void> {
+        try {
+          const list =
+            await apiFetch<ContainerListResponse>("/api/containers");
+
+          // The empty state and the grid swap places as containers appear,
+          // so both are set explicitly rather than assuming the prior state.
+          empty.hidden = list.containers.length > 0;
+          tiles.hidden = list.containers.length === 0;
+          renderTiles(list.containers);
+        } catch {
+          // The container was still created — only the refresh failed. The
+          // form has already reported its own success, so overwriting the
+          // page with an error here would contradict it.
+        }
       }
 
       try {
@@ -84,33 +143,25 @@
           // "Admin" showing only their own containers, implying the host has
           // just those. Their real view is the scoped dashboard.
           fail("This page is for administrators. Return to the dashboard.");
-        } else if (list.containers.length === 0) {
-          // Explicit empty state: a bare page with no tiles is ambiguous —
-          // it reads as "still loading" or "something broke" rather than
-          // "there is genuinely nothing here yet".
-          loading.hidden = true;
-          empty.hidden = false;
         } else {
           loading.hidden = true;
-          tiles.hidden = false;
 
-          // One island per container, mounted imperatively because the list
-          // is only known at runtime — Astro's `client:` directives resolve
-          // at build time, when the container set does not exist yet.
-          for (const container of list.containers) {
-            const mount = document.createElement("div");
-            tiles.appendChild(mount);
-
-            createRoot(mount).render(
-              createElement(MetricTile, {
-                containerId: container.id,
-                name: container.lxd_name,
-                state: container.lxd_status,
-                ramAllocatedMb: container.limit_ram_mb,
-                diskAllocatedGb: container.limit_disk_gb,
-              }),
-            );
+          if (list.containers.length === 0) {
+            // Explicit empty state: a bare page with no tiles is ambiguous —
+            // it reads as "still loading" or "something broke" rather than
+            // "there is genuinely nothing here yet".
+            empty.hidden = false;
+          } else {
+            tiles.hidden = false;
+            renderTiles(list.containers);
           }
+
+          formMount.hidden = false;
+          createRoot(formMount).render(
+            createElement(CreateContainerForm, {
+              onCreated: refreshContainers,
+            }),
+          );
         }
       } catch (err) {
         // 401 means no session, so send the user to sign in. Anything else is
@@ -187,6 +238,63 @@
       :global(.tile .error) {
         color: #a12; /* Warning stays readable against the tile background. */
         font-size: 0.85rem;
+      }
+
+      /* Form internals are styled here for the same reason as the tile:
+         CreateContainerForm renders plain semantic markup and no styles. */
+      :global(.create-form) {
+        display: grid;
+        gap: 0.35rem;
+        margin-top: 2.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #d0d0d0;
+        max-width: 28rem;
+      }
+
+      :global(.create-form h2) {
+        margin: 0 0 0.5rem;
+        font-size: 1.1rem;
+      }
+
+      :global(.create-form label) {
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin-top: 0.5rem;
+      }
+
+      :global(.create-form input) {
+        font: inherit;
+        padding: 0.35rem 0.5rem;
+      }
+
+      /* Range inputs ignore padding and stretch oddly with it. */
+      :global(.create-form input[type="range"]) {
+        padding: 0;
+      }
+
+      :global(.create-form button) {
+        font: inherit;
+        margin-top: 1rem;
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+      }
+
+      :global(.create-form .hint) {
+        margin: 0;
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      :global(.create-form .error) {
+        margin: 0.5rem 0 0;
+        color: #a12;
+        font-size: 0.9rem;
+      }
+
+      :global(.create-form .success) {
+        margin: 0.5rem 0 0;
+        color: #161;
+        font-size: 0.9rem;
       }
     </style>
   </body>
