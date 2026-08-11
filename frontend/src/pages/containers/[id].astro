@@ -27,6 +27,8 @@
 export function getStaticPaths() {
   return [{ params: { id: "view" } }];
 }
+
+import SiteHeader from "../../components/SiteHeader.astro";
 ---
 
 <html lang="en">
@@ -36,8 +38,12 @@ export function getStaticPaths() {
     <title>Container detail · Server Monitor</title>
   </head>
   <body>
+    <!-- Matched to this page's narrower `main` so the bar's contents line up
+         with the heading beneath it. -->
+    <SiteHeader maxWidth="48rem" />
+
     <main>
-      <p><a href="/">← Back to dashboard</a></p>
+      <!-- No back-link here: the header above carries Dashboard already. -->
       <h1 id="heading">Container</h1>
 
       <!-- Exclusive states, like the dashboard: the script unhides whichever

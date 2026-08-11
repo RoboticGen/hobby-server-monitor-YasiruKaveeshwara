@@ -8,6 +8,7 @@
 // files, there is no Node server in production). At build time there is no
 // session cookie, so the call would 401 and bake a permanent error into the
 // HTML. The fetch therefore runs in the browser, where the cookie exists.
+import SiteHeader from "../../components/SiteHeader.astro";
 ---
 
 <html lang="en">
@@ -17,6 +18,8 @@
     <title>Containers · Server Monitor</title>
   </head>
   <body>
+    <SiteHeader />
+
     <main>
       <h1>Containers</h1>
 

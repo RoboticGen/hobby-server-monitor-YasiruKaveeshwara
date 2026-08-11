@@ -12,7 +12,7 @@
 // So the check moves to a script that runs in the browser, where the session
 // cookie actually exists. The redirect rule itself is unchanged: 401 sends
 // the user to /login.
-import LogoutButton from "../components/LogoutButton";
+import SiteHeader from "../components/SiteHeader.astro";
 ---
 
 <html lang="en">
@@ -22,6 +22,8 @@ import LogoutButton from "../components/LogoutButton";
     <title>Server Monitor</title>
   </head>
   <body>
+    <SiteHeader />
+
     <!--
       Hidden until the session check resolves. Without this the signed-out
       user would see a flash of the signed-in layout before the redirect
@@ -31,7 +33,10 @@ import LogoutButton from "../components/LogoutButton";
       <h1>Server Monitor</h1>
       <p>Signed in as <strong id="user-email"></strong> (<span id="user-role"
         ></span>)</p>
-      <LogoutButton client:load />
+      <!--
+        Sign out lives in the header now, which is on every page. Keeping a
+        second copy here would put two of the same control on one screen.
+      -->
     </main>
 
     <p id="loading">Checking your session…</p>

@@ -10,6 +10,7 @@
 // files, there is no Node server in production). At build time there is no
 // session cookie, so the call would 401 and bake a permanent error into the
 // HTML. The fetch therefore runs in the browser, where the cookie exists.
+import SiteHeader from "../../components/SiteHeader.astro";
 ---
 
 <html lang="en">
@@ -19,8 +20,12 @@
     <title>Users · Server Monitor</title>
   </head>
   <body>
+    <SiteHeader />
+
     <main>
-      <p><a href="/admin">← Containers</a></p>
+      <!-- No back-link here: the header above carries Containers already, and
+           two links to the same place stacked on top of each other read as a
+           mistake. -->
       <h1>Users</h1>
 
       <!-- Three exclusive states; the script unhides exactly one once the
