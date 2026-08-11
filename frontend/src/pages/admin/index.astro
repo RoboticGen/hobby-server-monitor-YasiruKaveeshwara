@@ -1,0 +1,193 @@
+---
+// Admin dashboard: every container on the host, each with a live metric tile.
+//
+// WHY THE CONTAINER FETCH IS CLIENT-SIDE, NOT IN THIS FRONTMATTER:
+// Same reason as index.astro. The build guide describes fetching
+// GET /api/containers here at render time, but frontmatter runs at BUILD
+// time under Astro's static output (decision 7.12 — Falcon serves the built
+// files, there is no Node server in production). At build time there is no
+// session cookie, so the call would 401 and bake a permanent error into the
+// HTML. The fetch therefore runs in the browser, where the cookie exists.
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Containers · Server Monitor</title>
+  </head>
+  <body>
+    <main>
+      <h1>Containers</h1>
+
+      <!-- Each of the four states below is exclusive; the script unhides
+           exactly one once the fetch resolves. -->
+      <p id="loading">Loading containers…</p>
+      <p id="error" role="alert" hidden></p>
+      <p id="empty" hidden>No containers yet, create one below.</p>
+      <div id="tiles" class="tiles" hidden></div>
+    </main>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import { apiFetch, ApiError } from "../../lib/api";
+      import MetricTile from "../../components/MetricTile";
+
+      /**
+       * A container as returned by GET /api/containers: the DB row plus the
+       * live LXD fields that _enrich_with_lxd_state() merges in.
+       */
+      interface ContainerRecord {
+        id: string;
+        lxd_name: string;
+        image: string;
+        limit_ram_mb: number;
+        limit_cpu: number;
+        limit_disk_gb: number;
+        lxd_status: string;
+      }
+
+      interface ContainerListResponse {
+        containers: ContainerRecord[];
+      }
+
+      /** Subset of GET /api/auth/me this page needs. */
+      interface MeResponse {
+        role: string;
+      }
+
+      const loading = document.getElementById("loading") as HTMLElement;
+      const errorEl = document.getElementById("error") as HTMLElement;
+      const empty = document.getElementById("empty") as HTMLElement;
+      const tiles = document.getElementById("tiles") as HTMLElement;
+
+      /** Show a message in the error slot and hide the spinner. */
+      function fail(message: string): void {
+        loading.hidden = true;
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      }
+
+      try {
+        // Both calls are independent, so they run concurrently rather than
+        // making the page wait for two sequential round trips.
+        const [me, list] = await Promise.all([
+          apiFetch<MeResponse>("/api/auth/me"),
+          apiFetch<ContainerListResponse>("/api/containers"),
+        ]);
+
+        if (me.role !== "admin") {
+          // The backend already scopes GET /api/containers to what the caller
+          // may see, so this is not a security control — it is honesty about
+          // the page. Without it a regular user would land on a page titled
+          // "Admin" showing only their own containers, implying the host has
+          // just those. Their real view is the scoped dashboard.
+          fail("This page is for administrators. Return to the dashboard.");
+        } else if (list.containers.length === 0) {
+          // Explicit empty state: a bare page with no tiles is ambiguous —
+          // it reads as "still loading" or "something broke" rather than
+          // "there is genuinely nothing here yet".
+          loading.hidden = true;
+          empty.hidden = false;
+        } else {
+          loading.hidden = true;
+          tiles.hidden = false;
+
+          // One island per container, mounted imperatively because the list
+          // is only known at runtime — Astro's `client:` directives resolve
+          // at build time, when the container set does not exist yet.
+          for (const container of list.containers) {
+            const mount = document.createElement("div");
+            tiles.appendChild(mount);
+
+            createRoot(mount).render(
+              createElement(MetricTile, {
+                containerId: container.id,
+                name: container.lxd_name,
+                state: container.lxd_status,
+                ramAllocatedMb: container.limit_ram_mb,
+                diskAllocatedGb: container.limit_disk_gb,
+              }),
+            );
+          }
+        }
+      } catch (err) {
+        // 401 means no session, so send the user to sign in. Anything else is
+        // surfaced rather than redirected: bouncing to /login on a 500 or a
+        // dead backend would hide the real fault behind a login screen.
+        if (err instanceof ApiError && err.status === 401) {
+          window.location.replace("/login");
+        } else if (err instanceof ApiError) {
+          fail(`Could not load containers (${err.status}): ${err.message}`);
+        } else {
+          fail("Could not reach the server to load containers.");
+        }
+      }
+    </script>
+
+    <style>
+      main {
+        font-family: system-ui, sans-serif;
+        max-width: 60rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+        gap: 1rem;
+      }
+
+      /* Tile internals are styled here rather than in MetricTile.tsx because
+         the component renders plain semantic markup and carries no styles of
+         its own, so each page controls how its tiles look. */
+      :global(.tile) {
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        padding: 0.75rem 1rem;
+      }
+
+      :global(.tile header) {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.5rem;
+      }
+
+      :global(.tile h3) {
+        margin: 0;
+        font-size: 1rem;
+        overflow-wrap: anywhere;
+      }
+
+      :global(.tile .state) {
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      :global(.tile dl) {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.15rem 0.75rem;
+        margin: 0.75rem 0 0;
+        font-size: 0.9rem;
+      }
+
+      :global(.tile dt) {
+        color: #555;
+      }
+
+      :global(.tile dd) {
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      :global(.tile .error) {
+        color: #a12; /* Warning stays readable against the tile background. */
+        font-size: 0.85rem;
+      }
+    </style>
+  </body>
+</html>
