@@ -27,3 +27,6 @@ dist/
 Thumbs.db
 *.swp
 *.swo
+frontend/AGENTS.md
+frontend/CLAUDE.md
+frontend/.vscode
