@@ -24,7 +24,7 @@ from backend.resources.assignments import (
     AssignmentResource,
     ContainerDetailByUserResource,
 )
-from backend.resources.containers import ContainerListResource
+from backend.resources.containers import ContainerListResource, LxdOptionsResource
 from backend.resources.health import HealthResource
 from backend.resources.metrics import (
     ContainerHistoryResource,
@@ -101,6 +101,9 @@ def create_app() -> falcon.App:
     # container list + create
     app.add_route("/api/containers", ContainerListResource())
 
+    # host options backing the creation form's dropdowns (admin-only).
+    # Degrades to empty lists with stale=true when LXD is unreachable.
+    app.add_route("/api/lxd/options", LxdOptionsResource())
 
     # user management
     app.add_route("/api/users", UserListResource())
@@ -116,15 +119,11 @@ def create_app() -> falcon.App:
     # metrics: latest (dashboard polling target) + per-container history.
     # Both read from TinyFlux only, never LXD.
     app.add_route("/api/metrics/latest", LatestMetricsResource())
-    app.add_route(
-        "/api/containers/{container_id}/history", ContainerHistoryResource()
-    )
+    app.add_route("/api/containers/{container_id}/history", ContainerHistoryResource())
 
     # terminal: run one command inside a container (injection-safe, audited).
     # Available to any user with an active assignment, not just admins.
-    app.add_route(
-        "/api/containers/{container_id}/exec", ContainerExecResource()
-    )
+    app.add_route("/api/containers/{container_id}/exec", ContainerExecResource())
 
     # accounting: host capacity vs allocated, plus per-user allocation vs
     # quota. Degrades to DB-only figures when LXD is unreachable.

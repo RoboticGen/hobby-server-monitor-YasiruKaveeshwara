@@ -41,6 +41,16 @@ interface CreatedContainer {
 	limits: { ram_mb: number; cpu: number; disk_gb: number };
 }
 
+/** Response body of GET /api/lxd/options (backend/resources/containers.py). */
+interface LxdOptionsResponse {
+	images: { alias: string; description: string }[];
+	networks: { name: string; type: string; managed: boolean }[];
+	storage_pools: { name: string; driver: string }[];
+	/** True when the lists are empty because LXD could not be reached. */
+	stale: boolean;
+	lxd_error: string | null;
+}
+
 /** Upper bounds the sliders allow, derived from capacity minus allocation. */
 interface Headroom {
 	ramMb: number;
@@ -78,9 +88,13 @@ const RAM_STEP_MB = 256;
  *
  * A plain suggestion list, deliberately NOT presented as the set of valid
  * images: the field stays free-text so any alias LXD accepts can be typed.
- * PROJECT-PLAN 5.2 wants this list fetched from LXD at runtime, which needs a
- * backend endpoint that does not exist yet — flagged in the step summary
- * rather than faked with a hardcoded dropdown that would look authoritative.
+ * PROJECT-PLAN 5.2 wants this list fetched from LXD at runtime; the backend
+ * now serves it via GET /api/lxd/options, but that endpoint only sees images
+ * already cached locally on the host — remote aliases like 'ubuntu:22.04'
+ * resolve through the CLI's remotes, which the LXD HTTP API does not expose.
+ * A fresh host returns an empty cache, so the dropdown would be empty even
+ * though thousands of images are installable. The suggestions below fill
+ * that gap; the live list, when non-empty, is appended to them.
  */
 const IMAGE_SUGGESTIONS = ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "alpine:3.20"];
 
@@ -132,9 +146,17 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	const [ramMb, setRamMb] = useState<number>(512);
 	const [cpu, setCpu] = useState<number>(1);
 	const [diskGb, setDiskGb] = useState<number>(10);
+	// Placement and lifecycle options. Defaults match the backend's: blank
+	// placement inherits the default profile, and both toggles are off.
+	const [network, setNetwork] = useState<string>("");
+	const [storagePool, setStoragePool] = useState<string>("");
+	const [ephemeral, setEphemeral] = useState<boolean>(false);
+	const [autostart, setAutostart] = useState<boolean>(false);
+	const [description, setDescription] = useState<string>("");
 
 	// --- Request lifecycle ---
 	const [accounting, setAccounting] = useState<AccountingResponse | null>(null);
+	const [options, setOptions] = useState<LxdOptionsResponse | null>(null);
 	const [submitting, setSubmitting] = useState<boolean>(false);
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState<string | null>(null);
@@ -175,6 +197,36 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	}, [reloadKey]);
 
 	/**
+	 * Load the host's images, networks, and storage pools once on mount.
+	 *
+	 * Separate from the capacity effect and NOT keyed on `reloadKey`: pools
+	 * and networks are host configuration that creating a container does not
+	 * change, so re-fetching them after every create would be a round trip
+	 * that can only return the same answer.
+	 */
+	useEffect(() => {
+		let cancelled = false;
+
+		async function loadOptions(): Promise<void> {
+			try {
+				const data = await apiFetch<LxdOptionsResponse>("/api/lxd/options");
+				if (!cancelled) setOptions(data);
+			} catch {
+				// Same reasoning as capacity: these lists only populate
+				// dropdowns, and every field they feed has a valid blank
+				// default, so a failure here degrades the form rather than
+				// breaking it.
+				if (!cancelled) setOptions(null);
+			}
+		}
+
+		void loadOptions();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	/**
 	 * Submit the form.
 	 *
 	 * Client-side validation is limited to "is there a name at all". The LXD
@@ -196,11 +248,24 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 					name,
 					image,
 					limits: { ram_mb: ramMb, cpu, disk_gb: diskGb },
+					// Sent unconditionally, including when blank or false: the
+					// backend treats "" as "inherit the default profile" and
+					// false as off, so these are the explicit form of the
+					// defaults rather than a request to change anything.
+					network,
+					storage_pool: storagePool,
+					ephemeral,
+					autostart,
+					description,
 				}),
 			});
 
 			setSuccess(`Created ${created.name} (${created.image}).`);
+			// Name and description are cleared because they are unique to the
+			// container just made; the limits and placement stay put, since
+			// creating a batch of similar containers is the common case.
 			setName("");
+			setDescription("");
 			setReloadKey((key) => key + 1);
 			onCreated?.();
 		} catch (err) {
@@ -254,9 +319,17 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 				onChange={(event) => setImage(event.target.value)}
 			/>
 			<datalist id='image-suggestions'>
-				{IMAGE_SUGGESTIONS.map((alias) => (
-					<option key={alias} value={alias} />
+				{/* Locally cached aliases first, then the static fallbacks that
+				    are not already among them — a host with an empty image
+				    cache still gets usable suggestions. */}
+				{(options?.images ?? []).map((entry) => (
+					<option key={entry.alias} value={entry.alias} />
 				))}
+				{IMAGE_SUGGESTIONS.filter((alias) => !(options?.images ?? []).some((entry) => entry.alias === alias)).map(
+					(alias) => (
+						<option key={alias} value={alias} />
+					),
+				)}
 			</datalist>
 
 			<label htmlFor='container-ram'>
@@ -301,12 +374,89 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 				onChange={(event) => setDiskGb(Number(event.target.value))}
 			/>
 
+			{/* Both dropdowns lead with a blank "default" option rather than
+			    preselecting the first pool or network. Blank means "inherit
+			    the default profile", which is what LXD does on its own — so
+			    the default choice changes nothing, and any other choice is a
+			    deliberate override. */}
+			<label htmlFor='container-network'>Network</label>
+			<select
+				id='container-network'
+				name='network'
+				value={network}
+				onChange={(event) => setNetwork(event.target.value)}>
+				<option value=''>Default profile</option>
+				{(options?.networks ?? []).map((entry) => (
+					<option key={entry.name} value={entry.name}>
+						{entry.name}
+						{entry.type ? ` (${entry.type})` : ""}
+					</option>
+				))}
+			</select>
+
+			<label htmlFor='container-pool'>Storage pool</label>
+			<select
+				id='container-pool'
+				name='storage_pool'
+				value={storagePool}
+				onChange={(event) => setStoragePool(event.target.value)}>
+				<option value=''>Default profile</option>
+				{(options?.storage_pools ?? []).map((entry) => (
+					<option key={entry.name} value={entry.name}>
+						{entry.name}
+						{entry.driver ? ` (${entry.driver})` : ""}
+					</option>
+				))}
+			</select>
+
+			{/* Says why the two dropdowns above are empty. Without this an
+			    unreachable LXD looks like a host with no networks or pools. */}
+			{(options === null || options.stale) && (
+				<p className='hint' role='status'>
+					Could not read the host's networks and storage pools, so only the default profile is offered.
+				</p>
+			)}
+
+			<label htmlFor='container-description'>Description (optional)</label>
+			<input
+				id='container-description'
+				name='description'
+				value={description}
+				onChange={(event) => setDescription(event.target.value)}
+				placeholder='What this container is for'
+			/>
+
+			{/* Checkboxes wrap their label so the text is part of the hit
+			    target, which a separate <label htmlFor> would not give. */}
+			<label className='toggle'>
+				<input
+					type='checkbox'
+					name='autostart'
+					checked={autostart}
+					onChange={(event) => setAutostart(event.target.checked)}
+				/>
+				Start automatically when the host boots
+			</label>
+
+			<label className='toggle'>
+				<input
+					type='checkbox'
+					name='ephemeral'
+					checked={ephemeral}
+					onChange={(event) => setEphemeral(event.target.checked)}
+				/>
+				Ephemeral
+			</label>
+			{/* Spelled out because "ephemeral" understates it: this deletes the
+			    container on its first stop, and there is no undo. */}
+			<p className='hint'>Deletes itself permanently the first time it stops.</p>
+
 			<button type='submit' disabled={submitting}>
 				{submitting ? "Creating…" : "Create container"}
 			</button>
 
 			{/* role="alert" so the failure is announced, not just drawn. The
-          server's wording is passed through untouched. */}
+			    server's wording is passed through untouched. */}
 			{error && (
 				<p className='error' role='alert'>
 					{error}

@@ -267,6 +267,25 @@
         padding: 0.35rem 0.5rem;
       }
 
+      :global(.create-form select) {
+        font: inherit;
+        padding: 0.35rem 0.25rem;
+      }
+
+      /* Checkbox rows read as one control: the box sits inline with its text
+         rather than stacking like the labelled fields above. */
+      :global(.create-form .toggle) {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 400;
+      }
+
+      :global(.create-form .toggle input) {
+        width: auto;
+        margin: 0;
+      }
+
       /* Range inputs ignore padding and stretch oddly with it. */
       :global(.create-form input[type="range"]) {
         padding: 0;

@@ -89,16 +89,35 @@ def get_container(name: str) -> dict | None:
             "architecture": c.architecture,
             "created_at": str(c.created_at),
             "config": dict(c.config) if c.config else {},
+            # Exposed so a description set at creation can be read back;
+            # without it the field would be write-only and unverifiable.
+            "description": getattr(c, "description", "") or "",
         }
     except Exception:
         return None
 
 
-def create_container(name: str, image: str, limits: dict) -> dict:
+def create_container(
+    name: str,
+    image: str,
+    limits: dict,
+    *,
+    network: str = "",
+    storage_pool: str = "",
+    ephemeral: bool = False,
+    description: str = "",
+) -> dict:
     """Create a new LXD container with the given name, image, and limits.
 
     The limits dict should contain keys like 'limits.memory' and
-    'limits.cpu' matching the LXD config format.
+    'limits.cpu' matching the LXD config format. Autostart is passed in
+    that same dict as 'boot.autostart', since LXD models it as ordinary
+    config rather than a top-level property.
+
+    `network` and `storage_pool` are applied as device overrides. Both are
+    optional and omitted entirely when blank, in which case the container
+    inherits whatever the default profile specifies — which is the
+    behaviour every container had before these arguments existed.
 
     Returns a dict describing the created container.
     Raises on failure (callers should handle this).
@@ -111,7 +130,34 @@ def create_container(name: str, image: str, limits: dict) -> dict:
             "alias": image,
         },
         "config": limits,
+        # LXD deletes an ephemeral container as soon as it stops, so this
+        # is a top-level property rather than a config key.
+        "ephemeral": ephemeral,
     }
+
+    # Only set when non-empty: LXD treats a description of "" as an
+    # explicit blank, which is the same as omitting it, but sending the key
+    # unconditionally makes the intent harder to read.
+    if description:
+        container_config["description"] = description
+
+    # Devices are built only for the fields the caller actually supplied.
+    # An empty devices dict is left off completely so the default profile's
+    # eth0/root devices apply untouched — sending a partial override would
+    # replace them rather than merge.
+    devices: dict[str, dict] = {}
+    if network:
+        devices["eth0"] = {"type": "nic", "network": network, "name": "eth0"}
+    if storage_pool:
+        # NOTE: no "size" key here, so this selects which pool the root
+        # disk lives on without imposing a disk quota. See the step summary
+        # — limit_disk_gb is recorded in the DB but has never been applied
+        # to LXD, and starting to enforce it is a behaviour change beyond
+        # the scope of adding pool selection.
+        devices["root"] = {"type": "disk", "pool": storage_pool, "path": "/"}
+    if devices:
+        container_config["devices"] = devices
+
     container = client.containers.create(container_config, wait=True)
     return {
         "name": container.name,
@@ -120,6 +166,90 @@ def create_container(name: str, image: str, limits: dict) -> dict:
         "created_at": str(container.created_at),
         "config": dict(container.config) if container.config else {},
     }
+
+
+# ====================== Host Options ========================================
+# The three listings below back the container-creation form's dropdowns.
+# Each raises LXDUnavailableError rather than returning an empty list on
+# failure, so the caller can tell "this host genuinely has no custom
+# networks" from "we could not ask" — presenting the second as the first
+# would show an empty dropdown that looks authoritative.
+
+
+def list_images() -> list[dict]:
+    """Return the aliases of images cached locally on this host.
+
+    IMPORTANT LIMITATION: this lists images already downloaded to the local
+    image store, NOT everything installable. Remote aliases like
+    'ubuntu:22.04' resolve through remotes, which are a client-side CLI
+    concept that the LXD HTTP API does not expose — so a fresh host with an
+    empty cache returns an empty list even though thousands of images are
+    installable. The creation form therefore keeps its image field
+    free-text and treats this list as suggestions, not as the valid set.
+    """
+    try:
+        client = _get_client()
+        images = []
+        for image in client.images.all():
+            # One entry per alias, because a single image can carry several
+            # and the form offers aliases rather than fingerprints.
+            for alias in image.aliases or []:
+                images.append(
+                    {
+                        "alias": alias.get("name", ""),
+                        "description": (
+                            image.properties.get("description", "")
+                            if image.properties
+                            else ""
+                        ),
+                    }
+                )
+        return sorted(images, key=lambda item: item["alias"])
+    except Exception as exc:
+        raise LXDUnavailableError(f"Cannot list images from LXD: {exc}") from exc
+
+
+def list_networks() -> list[dict]:
+    """Return the networks LXD knows about.
+
+    Includes unmanaged interfaces (the host's physical NICs, bridges
+    created by other software) alongside LXD-managed ones, because a
+    container can legitimately be attached to either. `managed` is passed
+    through so the caller can distinguish them.
+    """
+    try:
+        client = _get_client()
+        return sorted(
+            (
+                {
+                    "name": network.name,
+                    "type": getattr(network, "type", ""),
+                    "managed": bool(getattr(network, "managed", False)),
+                }
+                for network in client.networks.all()
+            ),
+            key=lambda item: item["name"],
+        )
+    except Exception as exc:
+        raise LXDUnavailableError(f"Cannot list networks from LXD: {exc}") from exc
+
+
+def list_storage_pools() -> list[dict]:
+    """Return the storage pools available for a container's root disk."""
+    try:
+        client = _get_client()
+        return sorted(
+            (
+                {
+                    "name": pool.name,
+                    "driver": getattr(pool, "driver", ""),
+                }
+                for pool in client.storage_pools.all()
+            ),
+            key=lambda item: item["name"],
+        )
+    except Exception as exc:
+        raise LXDUnavailableError(f"Cannot list storage pools from LXD: {exc}") from exc
 
 
 def delete_container(name: str) -> None:
@@ -146,9 +276,7 @@ def rename_container(old_name: str, new_name: str) -> None:
     container.rename(new_name, wait=True)
 
 
-def execute_command(
-    name: str, command: list[str]
-) -> tuple[int, str, str]:
+def execute_command(name: str, command: list[str]) -> tuple[int, str, str]:
     """Execute a command inside a running LXD container.
 
     Returns a tuple of (exit_code, stdout, stderr).
@@ -175,8 +303,7 @@ def change_container_state(name: str, action: str) -> None:
     """
     if action not in _STATE_ACTIONS:
         raise ValueError(
-            f"Invalid state action '{action}'. "
-            f"Must be one of: {_STATE_ACTIONS}"
+            f"Invalid state action '{action}'. " f"Must be one of: {_STATE_ACTIONS}"
         )
     client = _get_client()
     container = client.containers.get(name)

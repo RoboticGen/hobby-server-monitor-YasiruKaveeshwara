@@ -80,6 +80,24 @@ def validate_non_negative_number(value, field: str, kind):
     return kind(value)
 
 
+def validate_bool(value, field: str, *, default: bool = False) -> bool:
+    """Return a real bool, or raise HTTPBadRequest.
+
+    Deliberately does NOT accept truthy strings like "true" or 1. JSON has
+    a boolean type, so a client sending a string got the encoding wrong,
+    and coercing it would hide that — the difference matters for flags like
+    `ephemeral`, where guessing wrong destroys the container on first stop.
+    """
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise falcon.HTTPBadRequest(
+            title=f"Invalid {field}",
+            description=f"'{field}' must be true or false.",
+        )
+    return value
+
+
 def validate_limits(limits_body, defaults: dict) -> tuple[int, float, int]:
     """Validate a `limits` sub-object, returning (ram_mb, cpu, disk_gb).
 
