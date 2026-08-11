@@ -1,0 +1,151 @@
+---
+// THROWAWAY test page for Step 21.1, referenced by that step's test only.
+// The terminal's real home is the container detail page / the scoped dashboard
+// (Step 22.1, which mounts the components already built); delete this file once
+// one of those exercises Terminal properly.
+//
+// It exists because Step 21.1 ships a component and nothing else, and its test
+// says to run commands "through this UI" — which needs a page to mount into.
+// Same arrangement as metric-tile-test.astro (Step 17.1) and
+// history-chart-test.astro (Step 19.1).
+//
+// The container id comes from the query string (?container=<uuid>) so this page
+// needs no fixture and no backend call of its own.
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Terminal test</title>
+  </head>
+  <body>
+    <main>
+      <h1>Terminal test</h1>
+      <p>
+        Append <code>?container=&lt;container-uuid&gt;</code> to this URL, then
+        run <code>ls</code>, <code>whoami</code> and <code>echo test</code>.
+      </p>
+      <p>
+        To check the refusal path, pass the id of a container you are
+        <strong>not</strong> assigned to: the backend's 403 should appear in the
+        transcript, not vanish silently.
+      </p>
+
+      <!--
+        Mounted client-side because the container id comes from the URL, which
+        does not exist at build time under Astro's static output.
+      -->
+      <div id="mount"></div>
+    </main>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import Terminal from "../components/Terminal";
+
+      const containerId = new URLSearchParams(location.search).get("container");
+      const mount = document.getElementById("mount");
+
+      if (!mount) {
+        throw new Error("mount point missing");
+      } else if (!containerId) {
+        mount.textContent = "No ?container= id supplied.";
+      } else {
+        createRoot(mount).render(createElement(Terminal, { containerId }));
+      }
+    </script>
+
+    <style>
+      main {
+        font-family: system-ui, sans-serif;
+        max-width: 48rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+
+      /* Terminal internals are styled here rather than in Terminal.tsx because
+         the component renders plain semantic markup and carries no styles of
+         its own, matching MetricTile and the forms. */
+      :global(.terminal-input) {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+      }
+
+      :global(.terminal-input label) {
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+
+      /* The input takes the remaining width: commands are the long part of
+         this row, the label and button are fixed. */
+      :global(.terminal-input input) {
+        flex: 1;
+        font-family: ui-monospace, monospace;
+        font-size: 0.9rem;
+        padding: 0.35rem 0.5rem;
+      }
+
+      :global(.terminal-input button) {
+        font: inherit;
+        padding: 0.35rem 1rem;
+        cursor: pointer;
+      }
+
+      :global(.terminal .hint) {
+        margin: 0.5rem 0 0;
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      /* The height cap is what makes this a scrolling log rather than a page
+         that grows without limit, and it is what the component's auto-scroll
+         to the newest entry depends on. */
+      :global(.terminal-log) {
+        max-height: 20rem;
+        overflow-y: auto;
+        margin: 0.75rem 0 0;
+        padding: 0.75rem;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: #fbfbfb;
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        /* Long output lines wrap instead of forcing the box to scroll
+           sideways, which would hide the start of every line. */
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      /* The echoed command is the anchor for reading the transcript, so it is
+         the one part that is emphasised. */
+      :global(.terminal-log .prompt) {
+        font-weight: 600;
+        color: #111;
+      }
+
+      :global(.terminal-log .stderr) {
+        color: #a12;
+      }
+
+      :global(.terminal-log .exit) {
+        color: #555;
+      }
+
+      /* A non-zero exit and a refused request both mean "this did not do what
+         you asked", so they share one treatment. */
+      :global(.terminal-log .failure) {
+        color: #a12;
+        font-weight: 600;
+      }
+
+      :global(.terminal-log:focus-visible) {
+        outline: 3px solid #0b3d91;
+        outline-offset: 2px;
+      }
+    </style>
+  </body>
+</html>
