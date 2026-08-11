@@ -54,7 +54,30 @@ def create_app() -> falcon.App:
     # on every request. It does NOT reject unauthenticated requests —
     # individual resource methods call require_role() or
     # require_container_access() to enforce their own requirements.
-    app = falcon.App(middleware=[AuthMiddleware()])
+    #
+    # CORSMiddleware is listed FIRST, which matters: Falcon unwinds response
+    # middleware in reverse order, so being first means its process_response
+    # runs last and the CORS headers land on *every* reply, including error
+    # replies raised from deeper middleware or resource code. Without that, a
+    # 401 from require_role() reaches the browser stripped of CORS headers,
+    # the browser refuses to expose the response, and the frontend cannot
+    # tell "not signed in" (redirect to /login) from "server unreachable"
+    # (show an error) — the exact distinction index.astro depends on.
+    #
+    # allow_origins/allow_credentials are pinned to the single configured
+    # origin rather than "*" for two reasons: the wildcard is illegal in a
+    # credentialed CORS response and browsers reject it outright, and echoing
+    # only the known frontend origin keeps arbitrary sites from making
+    # cookie-bearing calls to this API on a signed-in user's behalf.
+    app = falcon.App(
+        middleware=[
+            falcon.CORSMiddleware(
+                allow_origins=config.frontend_origin,
+                allow_credentials=config.frontend_origin,
+            ),
+            AuthMiddleware(),
+        ]
+    )
 
     # Contended writes are a capacity problem, not a bug. repo.transaction()
     # serialises quota-critical writes on SQLite's write lock, so a caller
