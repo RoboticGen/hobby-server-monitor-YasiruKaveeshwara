@@ -1,17 +1,84 @@
 ---
-
+// Landing page. Shows who you are signed in as, or sends you to /login.
+//
+// WHY THE SESSION CHECK IS CLIENT-SIDE, NOT IN THIS FRONTMATTER:
+// The build guide describes calling apiFetch("/api/auth/me") here at render
+// time. That works only under SSR, and this project is deliberately not SSR:
+// decision 7.12 in PROJECT-PLAN.md says Astro is built to static output and
+// served by the Falcon process itself, so no Node server exists in production
+// to run frontmatter per request. Frontmatter runs once, at BUILD time, where
+// there is no user and no cookie — it would 401 on every build and bake a
+// permanent "redirect to /login" into the HTML, locking every user out.
+// So the check moves to a script that runs in the browser, where the session
+// cookie actually exists. The redirect rule itself is unchanged: 401 sends
+// the user to /login.
+import LogoutButton from "../components/LogoutButton";
 ---
 
 <html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Server Monitor</title>
+  </head>
+  <body>
+    <!--
+      Hidden until the session check resolves. Without this the signed-out
+      user would see a flash of the signed-in layout before the redirect
+      fires, which reads as a bug and briefly implies access they don't have.
+    -->
+    <main id="app" hidden>
+      <h1>Server Monitor</h1>
+      <p>Signed in as <strong id="user-email"></strong> (<span id="user-role"
+        ></span>)</p>
+      <LogoutButton client:load />
+    </main>
+
+    <p id="loading">Checking your session…</p>
+
+    <script>
+      import { apiFetch, ApiError } from "../lib/api";
+
+      /** Shape of GET /api/auth/me (backend/resources/auth.py MeResource). */
+      interface MeResponse {
+        id: number;
+        email: string;
+        role: string;
+        status: string;
+      }
+
+      const app = document.getElementById("app") as HTMLElement;
+      const loading = document.getElementById("loading") as HTMLElement;
+
+      try {
+        const me = await apiFetch<MeResponse>("/api/auth/me");
+
+        // Assigned via textContent, never innerHTML: the email comes from a
+        // third party (Google) through our database, so treating it as markup
+        // would make it an injection vector.
+        (document.getElementById("user-email") as HTMLElement).textContent =
+          me.email;
+        (document.getElementById("user-role") as HTMLElement).textContent =
+          me.role;
+
+        loading.hidden = true;
+        app.hidden = false;
+      } catch (err) {
+        // 401 is the expected "not signed in" answer, so it redirects rather
+        // than showing an error. `replace` keeps /login out of history: using
+        // Back to return to a page that will bounce you again is a trap.
+        if (err instanceof ApiError && err.status === 401) {
+          window.location.replace("/login");
+        } else {
+          // Anything else (backend down, CORS, 500) must NOT masquerade as a
+          // signed-out state — a redirect loop to /login would hide the real
+          // fault, so the failure is surfaced instead.
+          loading.textContent =
+            err instanceof ApiError
+              ? `Could not check your session (${err.status}): ${err.message}`
+              : "Could not reach the server to check your session.";
+        }
+      }
+    </script>
+  </body>
 </html>
