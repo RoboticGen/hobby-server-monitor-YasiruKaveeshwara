@@ -135,7 +135,7 @@ def load_config() -> Config:
         # --- Optional variables: sensible defaults for development ---
         lxd_cert_path=_optional("LXD_CERT_PATH", ""),
         lxd_key_path=_optional("LXD_KEY_PATH", ""),
-        collector_interval_seconds=int(_optional("COLLECTOR_INTERVAL_SECONDS", "10")),
+        collector_interval_seconds=int(_optional("COLLECTOR_INTERVAL_SECONDS", "5")),
         access_token_lifetime_minutes=int(
             _optional("ACCESS_TOKEN_LIFETIME_MINUTES", "30")
         ),

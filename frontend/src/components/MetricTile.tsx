@@ -20,7 +20,7 @@ import { apiFetch, ApiError } from "../lib/api";
  * interval is one small DB read per tile — it does not add load to the LXD
  * daemon, and it does not scale with how many dashboard tabs are open.
  */
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 5_000;
 
 /**
  * One metric sample as stored by the collector.

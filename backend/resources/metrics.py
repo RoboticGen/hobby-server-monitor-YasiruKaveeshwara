@@ -116,3 +116,55 @@ class ContainerHistoryResource:
             "resolution": resolution,
             "points": points,
         }
+
+
+class RecentMetricsResource:
+    """GET /api/metrics/recent?container=<id>&limit=<n> — last N raw points.
+
+    Returns the most recent `limit` raw collector samples for a container
+    in ascending-time order so the frontend can immediately pre-populate
+    the live graph on first load without waiting to accumulate points from
+    the 5-second polling loop one-by-one.
+
+    Like all metrics endpoints, this NEVER calls LXD — it only reads from
+    TinyFlux (decision 7.5: dashboard polling cost must not add LXD load).
+    """
+
+    def on_get(self, req: falcon.Request, resp: falcon.Response) -> None:
+        """Return the last `limit` raw points for the requested container."""
+        # Auth check first — same pattern as LatestMetricsResource.
+        if req.context.user is None:
+            raise falcon.HTTPUnauthorized(
+                title="Not authenticated",
+                description="Please sign in to view metrics.",
+            )
+
+        container_id = req.get_param("container")
+        if not container_id:
+            raise falcon.HTTPBadRequest(
+                title="Missing container parameter",
+                description="Provide a 'container' query parameter with the "
+                "container's id, e.g. /api/metrics/recent?container=<id>.",
+            )
+
+        # Re-check access on every call — never cached.
+        require_container_access(req, container_id)
+
+        # `limit` caps how many recent raw points to return.
+        # Default 60 ≈ 5 minutes at a 5-second collector interval, enough
+        # to paint a useful live chart immediately on page load.
+        try:
+            limit = int(req.get_param("limit") or "60")
+            if limit < 1 or limit > 720:  # cap at 720 = 1h at 5s interval
+                limit = 60
+        except ValueError:
+            limit = 60
+
+        # Read from TinyFlux — no LXD call (decision 7.5).
+        points = store.get_recent_points(container_id, limit=limit)
+
+        resp.media = {
+            "container_id": container_id,
+            "points": points,
+            "count": len(points),
+        }

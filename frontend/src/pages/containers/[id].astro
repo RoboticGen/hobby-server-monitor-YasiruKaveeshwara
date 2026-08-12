@@ -63,17 +63,8 @@ import SiteHeader from "../../components/SiteHeader.astro";
       <div id="detail" hidden>
         <div id="tile"></div>
 
-        <h2>History</h2>
-        <!-- Rendered server-side rather than by the script so the control is
-             present in the HTML and keyboard-reachable before JS runs. -->
-        <div class="windows" role="group" aria-label="History window">
-          <button type="button" data-window="1h" aria-pressed="true">1h</button>
-          <button type="button" data-window="24h" aria-pressed="false">24h</button>
-          <button type="button" data-window="7d" aria-pressed="false">7d</button>
-        </div>
-
-        <p id="chart-status" role="status">Loading history…</p>
-        <div id="chart"></div>
+        <h2>Resource graphs</h2>
+        <div id="graphs"></div>
 
         <h2>Terminal</h2>
         <!-- Mounted by the script rather than with a client: directive because
@@ -85,10 +76,10 @@ import SiteHeader from "../../components/SiteHeader.astro";
 
     <script>
       import { createElement } from "react";
-      import { createRoot, type Root } from "react-dom/client";
+      import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
       import ContainerDetailSummary from "../../components/ContainerDetailSummary";
-      import HistoryChart from "../../components/HistoryChart";
+      import ContainerResourceGraphs from "../../components/ContainerResourceGraphs";
       import Terminal from "../../components/Terminal";
 
       /**
@@ -111,58 +102,13 @@ import SiteHeader from "../../components/SiteHeader.astro";
         lxd_created_at?: string;
       }
 
-      /**
-       * One row of GET /api/containers/{id}/history. The backend returns full
-       * metric dicts at every resolution (downsampling averages each field but
-       * keeps its name), so the page picks which field to plot.
-       */
-      interface HistoryRow {
-        time: string;
-        cpu_usage_ns: number;
-        ram_used_mb: number;
-        disk_used_mb: number;
-        net_rx_bytes: number;
-        net_tx_bytes: number;
-        pid_count: number;
-      }
-
-      interface HistoryResponse {
-        container_id: string;
-        window: string;
-        resolution: string;
-        points: HistoryRow[];
-      }
-
-      /** The three windows the backend accepts; anything else is a 400. */
-      const WINDOWS = ["1h", "24h", "7d"] as const;
-      type Window = (typeof WINDOWS)[number];
-
-      /**
-       * Which metric the chart plots.
-       *
-       * RAM rather than CPU: HistoryChart plots stored values directly, and
-       * cpu_usage_ns is a cumulative nanosecond counter, so charting it draws
-       * a monotonic ramp that says nothing about load. Converting it to a
-       * percentage needs consecutive-sample differencing (the arithmetic
-       * MetricTile does live), which the averaged 5m/1h buckets cannot
-       * support. ram_used_mb is an absolute gauge, so it is meaningful at
-       * every resolution.
-       */
-      const CHART_FIELD: keyof HistoryRow = "ram_used_mb";
-
       const heading = document.getElementById("heading") as HTMLElement;
       const loading = document.getElementById("loading") as HTMLElement;
       const errorEl = document.getElementById("error") as HTMLElement;
       const detail = document.getElementById("detail") as HTMLElement;
       const tileMount = document.getElementById("tile") as HTMLElement;
-      const chartMount = document.getElementById("chart") as HTMLElement;
+      const graphsMount = document.getElementById("graphs") as HTMLElement;
       const terminalMount = document.getElementById("terminal") as HTMLElement;
-      const chartStatus = document.getElementById(
-        "chart-status",
-      ) as HTMLElement;
-      const buttons = Array.from(
-        document.querySelectorAll<HTMLButtonElement>(".windows button"),
-      );
 
       /** Show a message in the page-level error slot and stop the spinner. */
       function fail(message: string): void {
@@ -186,81 +132,6 @@ import SiteHeader from "../../components/SiteHeader.astro";
           return `Could not load ${subject} (${err.status}): ${err.message}`;
         }
         return `Could not reach the server to load ${subject}.`;
-      }
-
-      /**
-       * The chart's React root, created once and reused.
-       *
-       * Calling createRoot() on the same element per window switch would
-       * mount a second root over the first — React warns, and the detached
-       * root keeps its state alive. Rendering into one root replaces the
-       * chart's contents, which is what switching windows should do.
-       */
-      let chartRoot: Root | null = null;
-
-      /**
-       * Fetch one window's history and repaint the chart.
-       *
-       * Called on first load and on every window-button click. Each click
-       * re-requests the series rather than filtering a cached one: the
-       * backend serves each window from its own pre-downsampled resolution
-       * (raw / 5m / 1h per decision 7.9), so the three windows are different
-       * data, not slices of one series.
-       */
-      async function loadHistory(
-        containerId: string,
-        windowKey: Window,
-      ): Promise<void> {
-        chartStatus.hidden = false;
-        chartStatus.textContent = "Loading history…";
-
-        try {
-          const history = await apiFetch<HistoryResponse>(
-            `/api/containers/${encodeURIComponent(containerId)}/history?window=${windowKey}`,
-          );
-
-          if (!chartRoot) chartRoot = createRoot(chartMount);
-          chartRoot.render(
-            createElement(HistoryChart, {
-              points: history.points.map((row) => ({
-                time: row.time,
-                value: Number(row[CHART_FIELD]) || 0,
-              })),
-            }),
-          );
-
-          // An empty series is a normal state for a container the collector
-          // has not sampled through a full window yet, so it is reported as
-          // fact rather than as an error.
-          chartStatus.hidden = history.points.length > 0;
-          chartStatus.textContent =
-            history.points.length > 0
-              ? ""
-              : `No samples recorded in the last ${windowKey}.`;
-        } catch (err) {
-          // Scoped to the chart, not the page: the tile above is still live
-          // and correct, so blanking the whole page over a history failure
-          // would throw away working information.
-          chartStatus.hidden = false;
-          chartStatus.textContent = describe(err, "history");
-        }
-      }
-
-      /** Wire the window buttons once the container id is known. */
-      function bindWindowButtons(containerId: string): void {
-        for (const button of buttons) {
-          button.addEventListener("click", () => {
-            const windowKey = button.dataset.window as Window;
-
-            // aria-pressed is set on every button, not just the clicked one,
-            // so the group always has exactly one pressed state.
-            for (const other of buttons) {
-              other.setAttribute("aria-pressed", String(other === button));
-            }
-
-            void loadHistory(containerId, windowKey);
-          });
-        }
       }
 
       const containerId = new URLSearchParams(location.search).get("container");
@@ -303,9 +174,14 @@ import SiteHeader from "../../components/SiteHeader.astro";
             }),
           );
 
-          bindWindowButtons(container.id);
-          // 1h matches the aria-pressed="true" button in the markup above.
-          void loadHistory(container.id, "1h");
+          createRoot(graphsMount).render(
+            createElement(ContainerResourceGraphs, {
+              containerId: container.id,
+              ramAllocatedMb: container.limit_ram_mb,
+              cpuAllocated: container.limit_cpu,
+              diskAllocatedGb: container.limit_disk_gb,
+            }),
+          );
 
           // Mounted only after the metadata call above succeeded — and that is
           // the call that enforces access, answering 403 for a container this
@@ -363,44 +239,122 @@ import SiteHeader from "../../components/SiteHeader.astro";
       }
       #error button:hover { background: #fef0f0; }
 
-      .windows {
+      /* Resource graph internals: the component renders semantic markup only,
+         so the page owns the visual treatment just like it does for MetricTile. */
+      :global(.resource-graphs) {
+        margin-top: 0.25rem;
+        padding: 1rem;
+        border: 1px solid #d0d0d0;
+        border-radius: 12px;
+        background: #fff;
+      }
+
+      :global(.resource-graphs-header) {
         display: flex;
-        gap: 0.4rem;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
         margin-bottom: 0.75rem;
       }
 
-      .windows button {
+      :global(.resource-graphs-header h3) {
+        margin: 0;
+      }
+
+      :global(.resource-graphs-header p) {
+        margin: 0.2rem 0 0;
+        color: #555;
+        font-size: 0.85rem;
+        max-width: 42rem;
+      }
+
+      :global(.resource-window-group) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+
+      :global(.resource-window-group button) {
         font: inherit;
         padding: 0.3rem 0.8rem;
         border: 1px solid #d0d0d0;
-        border-radius: 4px;
+        border-radius: 999px;
         background: #fff;
         cursor: pointer;
       }
 
-      /* The selected window is marked by aria-pressed, so the styling hangs
-         off the same attribute assistive tech reads — one source of truth for
-         "which window is active" instead of a parallel CSS class. */
-      .windows button[aria-pressed="true"] {
+      :global(.resource-window-group button[aria-pressed="true"]) {
         background: #222;
         border-color: #222;
         color: #fff;
       }
 
-      #chart-status {
+      :global(.resource-graphs-status) {
         margin: 0 0 0.5rem;
         font-size: 0.85rem;
         color: #555;
       }
 
-      /* HistoryChart draws with stroke="currentColor" and ships no styles, so
-         the page sets the line colour and box, exactly as the tile is styled
-         on the dashboard. */
+      :global(.resource-graphs-error) {
+        margin: 0 0 0.5rem;
+        font-size: 0.85rem;
+        color: #a12;
+      }
+
+      :global(.graph-grid) {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+        gap: 0.75rem;
+      }
+
+      :global(.graph-card) {
+        padding: 0.8rem 0.85rem;
+        border: 1px solid #e0e0e0;
+        border-radius: 10px;
+        background: #fbfbfb;
+      }
+
+      :global(.graph-card header) {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+
+      :global(.graph-card h4) {
+        margin: 0;
+        font-size: 0.95rem;
+      }
+
+      :global(.graph-card p) {
+        margin: 0.15rem 0 0;
+        font-size: 0.82rem;
+        color: #555;
+      }
+
+      :global(.graph-card span) {
+        font-size: 0.75rem;
+        color: #666;
+      }
+
+      :global(.graph-empty) {
+        display: grid;
+        place-items: center;
+        min-height: 120px;
+        margin: 0;
+        color: #555;
+        text-align: center;
+        font-size: 0.85rem;
+      }
+
       :global(.history-chart) {
         display: block;
         width: 100%;
         color: #06c;
         border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        background: #fff;
       }
 
       /* Terminal internals, styled here for the same reason as the tile and the

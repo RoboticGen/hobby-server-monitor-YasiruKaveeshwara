@@ -6,6 +6,9 @@ resources. This is the single place where the app's component graph is
 built — no route registration happens anywhere else.
 """
 
+import subprocess
+import sys
+from pathlib import Path
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 import logging
@@ -31,6 +34,7 @@ from backend.resources.health import HealthResource
 from backend.resources.metrics import (
     ContainerHistoryResource,
     LatestMetricsResource,
+    RecentMetricsResource,
 )
 from backend.resources.terminal import ContainerExecResource
 from backend.resources.users import UserDetailResource, UserListResource
@@ -142,6 +146,8 @@ def create_app() -> falcon.App:
     # Both read from TinyFlux only, never LXD.
     app.add_route("/api/metrics/latest", LatestMetricsResource())
     app.add_route("/api/containers/{container_id}/history", ContainerHistoryResource())
+    # recent: last N raw points for live-graph pre-seeding on page load.
+    app.add_route("/api/metrics/recent", RecentMetricsResource())
 
     # terminal: run one command inside a container (injection-safe, audited).
     # Available to any user with an active assignment, not just admins.
@@ -164,6 +170,14 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------
     app = create_app()
 
+    # Start the collector as a separate OS process in dev so the UI has a
+    # real background sample source without sharing the API process.
+    repo_root = Path(__file__).resolve().parent.parent
+    collector_proc = subprocess.Popen(
+        [sys.executable, "-m", "backend.collector.collector"],
+        cwd=str(repo_root),
+    )
+
     # Without this, logging defaults to WARNING on the root logger with no
     # handler configured, so the log.error() calls in resources/auth.py that
     # carry Google's OAuth failure reason would be discarded — and that reason
@@ -179,3 +193,9 @@ if __name__ == "__main__":
             httpd.serve_forever()
         except KeyboardInterrupt:
             print("\n[dev] Server stopped.")
+        finally:
+            collector_proc.terminate()
+            try:
+                collector_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                collector_proc.kill()

@@ -532,6 +532,15 @@ def get_host_resources() -> dict:
 # ====================== Metrics State =======================================
 
 
+def _get_val(obj, key: str, default=None):
+    """Safely get a value from either a dict or an object attribute."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def get_container_state(lxd_name: str) -> dict:
     """Return a flat metrics dict for a running container.
 
@@ -554,44 +563,44 @@ def get_container_state(lxd_name: str) -> dict:
         ) from exc
 
     # CPU: LXD returns total nanoseconds used; we expose it as a float.
-    # The retention/downsampling job (Phase 10) converts successive
-    # snapshots to a percentage average before writing "5m" points.
-    cpu_usage = 0.0
-    if state.cpu and state.cpu.usage is not None:
-        cpu_usage = float(state.cpu.usage)
+    # Handles both dict and object structures polymorphically.
+    cpu = _get_val(state, "cpu")
+    cpu_usage = float(_get_val(cpu, "usage", 0.0) or 0.0)
 
     # Memory in bytes
-    ram_used_mb = 0.0
-    ram_total_mb = 0.0
-    if state.memory:
-        ram_used_mb = float(state.memory.usage or 0) / (1024 * 1024)
-        ram_total_mb = float(state.memory.usage_peak or 0) / (1024 * 1024)
+    mem = _get_val(state, "memory")
+    ram_used_mb = float(_get_val(mem, "usage", 0.0) or 0.0) / (1024 * 1024)
+    ram_peak_mb = float(_get_val(mem, "usage_peak", 0.0) or 0.0) / (1024 * 1024)
 
-    # Disk usage: sum the root disk device
-    disk_used_mb = 0.0
-    if state.disk:
-        root = state.disk.get("root")
-        if root and root.usage is not None:
-            disk_used_mb = float(root.usage) / (1024 * 1024)
+    # Disk usage: look up the root device
+    disk = _get_val(state, "disk")
+    root_disk = _get_val(disk, "root")
+    disk_used_mb = float(_get_val(root_disk, "usage", 0.0) or 0.0) / (1024 * 1024)
 
     # Network I/O: sum across all interfaces
     net_rx_bytes = 0.0
     net_tx_bytes = 0.0
-    if state.network:
-        for iface_data in state.network.values():
-            counters = iface_data.get("counters", {})
-            net_rx_bytes += float(counters.get("bytes_received", 0))
-            net_tx_bytes += float(counters.get("bytes_sent", 0))
+    net = _get_val(state, "network")
+    if net:
+        if isinstance(net, dict) or hasattr(net, "values"):
+            ifaces = net.values()
+        else:
+            ifaces = [net]
+        for iface_data in ifaces:
+            counters = _get_val(iface_data, "counters")
+            net_rx_bytes += float(_get_val(counters, "bytes_received", 0.0) or 0.0)
+            net_tx_bytes += float(_get_val(counters, "bytes_sent", 0.0) or 0.0)
 
     # Process count
     pid_count = 0.0
-    if state.processes is not None:
-        pid_count = float(state.processes)
+    procs = _get_val(state, "processes")
+    if procs is not None:
+        pid_count = float(procs)
 
     return {
         "cpu_usage_ns": cpu_usage,
         "ram_used_mb": ram_used_mb,
-        "ram_peak_mb": ram_total_mb,
+        "ram_peak_mb": ram_peak_mb,
         "disk_used_mb": disk_used_mb,
         "net_rx_bytes": net_rx_bytes,
         "net_tx_bytes": net_tx_bytes,
