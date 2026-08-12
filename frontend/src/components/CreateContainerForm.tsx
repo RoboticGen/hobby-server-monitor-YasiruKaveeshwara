@@ -25,10 +25,33 @@ interface AllocatedTotals {
 	container_count: number;
 }
 
+interface UserQuota {
+	ram_mb: number;
+	cpu: number;
+	disk_gb: number;
+}
+
+interface UserAllocation {
+	ram_mb: number;
+	cpu: number;
+	disk_gb: number;
+}
+
+interface UserAccountingRow {
+	id: string;
+	email: string;
+	role: string;
+	status: string;
+	allocation: UserAllocation;
+	quota: UserQuota;
+	container_count: number;
+}
+
 /** Response body of GET /api/accounting (backend/resources/accounting.py). */
 interface AccountingResponse {
 	host: HostResources | null;
 	allocated: AllocatedTotals;
+	users: UserAccountingRow[];
 	stale: boolean;
 	host_error: string | null;
 }
@@ -115,7 +138,7 @@ const IMAGE_SUGGESTIONS = ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "alpine:
  * with a 2GB limit still holds that 2GB against the host, so allocation is
  * the figure that decides whether a new container fits.
  */
-function computeHeadroom(accounting: AccountingResponse | null): Headroom {
+function computeHostHeadroom(accounting: AccountingResponse | null): Headroom {
 	if (!accounting?.host) {
 		return {
 			ramMb: FALLBACK_MAX_RAM_MB,
@@ -125,12 +148,37 @@ function computeHeadroom(accounting: AccountingResponse | null): Headroom {
 	}
 
 	const { host, allocated } = accounting;
-	// Clamped at zero: a host that is already over-allocated would otherwise
-	// produce a negative max, which renders as a broken slider.
 	return {
 		ramMb: Math.max(0, Math.floor(host.ram_total_mb - allocated.ram_mb)),
 		cpu: Math.max(0, Math.floor(host.cpu_cores - allocated.cpu)),
 		diskGb: Math.max(0, Math.floor(host.disk_total_gb - allocated.disk_gb)),
+	};
+}
+
+function computeRemainingQuota(user: UserAccountingRow): Headroom {
+	return {
+		ramMb: user.quota.ram_mb === 0 ? FALLBACK_MAX_RAM_MB : Math.max(0, user.quota.ram_mb - user.allocation.ram_mb),
+		cpu: user.quota.cpu === 0 ? FALLBACK_MAX_CPU : Math.max(0, user.quota.cpu - user.allocation.cpu),
+		diskGb: user.quota.disk_gb === 0 ? FALLBACK_MAX_DISK_GB : Math.max(0, user.quota.disk_gb - user.allocation.disk_gb),
+	};
+}
+
+function computeEffectiveHeadroom(accounting: AccountingResponse | null, selectedAssigneeId: string): Headroom {
+	const hostHeadroom = computeHostHeadroom(accounting);
+	if (!accounting || !selectedAssigneeId) {
+		return hostHeadroom;
+	}
+
+	const assignee = accounting.users.find((user) => user.id === selectedAssigneeId);
+	if (!assignee) {
+		return hostHeadroom;
+	}
+
+	const quotaHeadroom = computeRemainingQuota(assignee);
+	return {
+		ramMb: Math.min(hostHeadroom.ramMb, quotaHeadroom.ramMb),
+		cpu: Math.min(hostHeadroom.cpu, quotaHeadroom.cpu),
+		diskGb: Math.min(hostHeadroom.diskGb, quotaHeadroom.diskGb),
 	};
 }
 
@@ -144,6 +192,7 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	const [name, setName] = useState<string>("");
 	const [image, setImage] = useState<string>(IMAGE_SUGGESTIONS[0]);
 	const [useCustomImage, setUseCustomImage] = useState<boolean>(false);
+	const [assigneeId, setAssigneeId] = useState<string>("");
 	const [ramMb, setRamMb] = useState<number>(512);
 	const [cpu, setCpu] = useState<number>(1);
 	const [diskGb, setDiskGb] = useState<number>(10);
@@ -166,7 +215,12 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	// understand why the image list might be empty on this host.
 	const lxdError = options?.lxd_error ?? null;
 
-	const headroom = computeHeadroom(accounting);
+	const hostHeadroom = computeHostHeadroom(accounting);
+	const effectiveHeadroom = computeEffectiveHeadroom(accounting, assigneeId);
+	const selectedAssignee = accounting?.users.find((user) => user.id === assigneeId) ?? null;
+	const selectedQuota = selectedAssignee ? computeRemainingQuota(selectedAssignee) : null;
+	const canCreate =
+		effectiveHeadroom.ramMb >= RAM_STEP_MB && effectiveHeadroom.cpu >= 1 && effectiveHeadroom.diskGb >= 1;
 
 	/**
 	 * Load host capacity once on mount, and again after each create.
@@ -177,6 +231,20 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	 * where local arithmetic would drift from the server's view.
 	 */
 	const [reloadKey, setReloadKey] = useState<number>(0);
+
+	useEffect(() => {
+		if (ramMb > effectiveHeadroom.ramMb) {
+			setRamMb(
+				Math.max(Math.min(ramMb, effectiveHeadroom.ramMb), effectiveHeadroom.ramMb >= RAM_STEP_MB ? RAM_STEP_MB : 0),
+			);
+		}
+		if (cpu > effectiveHeadroom.cpu) {
+			setCpu(Math.max(Math.min(cpu, effectiveHeadroom.cpu), effectiveHeadroom.cpu >= 1 ? 1 : 0));
+		}
+		if (diskGb > effectiveHeadroom.diskGb) {
+			setDiskGb(Math.max(Math.min(diskGb, effectiveHeadroom.diskGb), effectiveHeadroom.diskGb >= 1 ? 1 : 0));
+		}
+	}, [effectiveHeadroom, ramMb, cpu, diskGb]);
 
 	useEffect(() => {
 		// Guards a late response from writing state into an unmounted form.
@@ -253,6 +321,7 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 					name,
 					image,
 					limits: { ram_mb: ramMb, cpu, disk_gb: diskGb },
+					assign_to: assigneeId || undefined,
 					// Sent unconditionally, including when blank or false: the
 					// backend treats "" as "inherit the default profile" and
 					// false as off, so these are the explicit form of the
@@ -382,47 +451,89 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 				</>
 			}
 
+			{accounting?.users && accounting.users.length > 0 && (
+				<>
+					<label htmlFor='container-assignee'>Assign to user</label>
+					<select
+						id='container-assignee'
+						name='assign_to'
+						value={assigneeId}
+						onChange={(event) => setAssigneeId(event.target.value)}>
+						<option value=''>No pre-assignment</option>
+						{accounting.users.map((user) => (
+							<option key={user.id} value={user.id}>
+								{user.email} ({user.allocation.ram_mb}/{user.quota.ram_mb} MB, {user.allocation.cpu}/{user.quota.cpu}{" "}
+								cores, {user.allocation.disk_gb}/{user.quota.disk_gb} GB)
+							</option>
+						))}
+					</select>
+					{selectedQuota && (
+						<p className='hint'>
+							Selected user remaining quota: {formatRam(selectedQuota.ramMb)} RAM, {selectedQuota.cpu.toFixed(1)} CPU,{" "}
+							{selectedQuota.diskGb} GB disk.
+						</p>
+					)}
+				</>
+			)}
+
 			<label htmlFor='container-ram'>
-				RAM: {formatRam(ramMb)} of {formatRam(headroom.ramMb)} available
+				RAM: {formatRam(ramMb)} of {formatRam(effectiveHeadroom.ramMb)} available
 			</label>
 			<input
 				id='container-ram'
 				name='ram'
 				type='range'
-				min={RAM_STEP_MB}
-				max={Math.max(RAM_STEP_MB, headroom.ramMb)}
+				min={effectiveHeadroom.ramMb >= RAM_STEP_MB ? RAM_STEP_MB : 0}
+				max={Math.max(effectiveHeadroom.ramMb, 0)}
 				step={RAM_STEP_MB}
-				value={ramMb}
+				value={Math.min(ramMb, Math.max(effectiveHeadroom.ramMb, 0))}
 				onChange={(event) => setRamMb(Number(event.target.value))}
+				disabled={effectiveHeadroom.ramMb < RAM_STEP_MB}
 			/>
-
+			{effectiveHeadroom.ramMb < RAM_STEP_MB && (
+				<p className='hint' role='status'>
+					Not enough headroom to select a RAM limit with the current step size.
+				</p>
+			)}
 			{/* A stepper rather than a slider: core counts are small integers where
           an exact value matters, and dragging for "2" is worse than typing it. */}
-			<label htmlFor='container-cpu'>CPU cores (max {headroom.cpu || FALLBACK_MAX_CPU})</label>
+			<label htmlFor='container-cpu'>CPU cores (max {accounting ? effectiveHeadroom.cpu : FALLBACK_MAX_CPU})</label>
 			<input
 				id='container-cpu'
 				name='cpu'
 				type='number'
-				min={1}
-				max={Math.max(1, headroom.cpu || FALLBACK_MAX_CPU)}
+				min={effectiveHeadroom.cpu >= 1 ? 1 : 0}
+				max={Math.max(effectiveHeadroom.cpu, 0)}
 				step={1}
-				value={cpu}
+				value={Math.min(cpu, Math.max(effectiveHeadroom.cpu, 0))}
 				onChange={(event) => setCpu(Number(event.target.value))}
+				disabled={effectiveHeadroom.cpu < 1}
 			/>
+			{effectiveHeadroom.cpu < 1 && (
+				<p className='hint' role='status'>
+					Not enough CPU quota or host capacity available to choose a core limit.
+				</p>
+			)}
 
 			<label htmlFor='container-disk'>
-				Disk: {diskGb} GB of {headroom.diskGb} GB available
+				Disk: {diskGb} GB of {effectiveHeadroom.diskGb} GB available
 			</label>
 			<input
 				id='container-disk'
 				name='disk'
 				type='range'
-				min={1}
-				max={Math.max(1, headroom.diskGb)}
+				min={effectiveHeadroom.diskGb >= 1 ? 1 : 0}
+				max={Math.max(effectiveHeadroom.diskGb, 0)}
 				step={1}
-				value={diskGb}
+				value={Math.min(diskGb, Math.max(effectiveHeadroom.diskGb, 0))}
 				onChange={(event) => setDiskGb(Number(event.target.value))}
+				disabled={effectiveHeadroom.diskGb < 1}
 			/>
+			{effectiveHeadroom.diskGb < 1 && (
+				<p className='hint' role='status'>
+					Not enough disk quota or host capacity available to choose a disk limit.
+				</p>
+			)}
 
 			{/* Both dropdowns lead with a blank "default" option rather than
 			    preselecting the first pool or network. Blank means "inherit
@@ -518,7 +629,7 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 			    container on its first stop, and there is no undo. */}
 			<p className='hint'>Deletes itself permanently the first time it stops.</p>
 
-			<button type='submit' disabled={submitting}>
+			<button type='submit' disabled={submitting || !canCreate}>
 				{submitting ? "Creating…" : "Create container"}
 			</button>
 

@@ -129,6 +129,26 @@ class TestAssignmentEndpoints:
         assert result.status_code == 200
         assert result.json["id"] == self.container_id
 
+    def test_assigned_container_returns_detail_metadata(self):
+        """GET /api/containers/{id} returns the enriched detail response."""
+        self.client.simulate_post(
+            f"/api/users/{self.user_id}/containers/{self.container_id}",
+            headers=self._admin_headers(),
+        )
+
+        result = self.client.simulate_get(
+            f"/api/containers/{self.container_id}",
+            headers=self._user_headers(),
+        )
+        assert result.status_code == 200
+        body = result.json
+        assert body["id"] == self.container_id
+        assert body["lxd_status"] == "Unknown"
+        assert body["lxd_image"] == "ubuntu:22.04"
+        assert body["lxd_ip_addresses"] == []
+        assert body["lxd_architecture"] == ""
+        assert body["lxd_created_at"] is not None
+
     def test_unassigned_container_returns_403_not_404(self):
         """Requesting an unassigned container by ID must return 403, not 404.
 

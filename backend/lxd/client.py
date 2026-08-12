@@ -119,6 +119,40 @@ def get_container(name: str) -> dict | None:
         return None
 
 
+def get_container_details(name: str) -> dict | None:
+    """Return full container details including live LXD state and network info.
+
+    This is used for the detail page, where the UI needs IP addresses,
+    runtime state, and the current image metadata. It is deliberately
+    separate from get_container() so list views do not pay the cost of
+    an extra state() call for every container.
+    """
+    try:
+        client = _get_client()
+        c = client.containers.get(name)
+        state = c.state()
+        return {
+            "name": c.name,
+            "status": c.status,
+            "architecture": c.architecture,
+            "created_at": str(c.created_at),
+            "config": dict(c.config) if c.config else {},
+            "description": getattr(c, "description", "") or "",
+            "state": {
+                "status": getattr(state, "status", "Unknown"),
+                "status_code": getattr(state, "status_code", 0),
+                "processes": getattr(state, "processes", 0),
+                "pid": getattr(state, "pid", 0),
+                "cpu": getattr(state, "cpu", {}),
+                "memory": getattr(state, "memory", {}),
+                "disk": getattr(state, "disk", {}),
+                "network": getattr(state, "network", {}),
+            },
+        }
+    except Exception:
+        return None
+
+
 def create_container(
     name: str,
     image: str,

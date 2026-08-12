@@ -18,6 +18,7 @@ import falcon
 from backend.auth.middleware import require_role
 from backend.db import repo
 from backend.lxd.quota import check_quota
+from backend.resources.containers import _enrich_with_lxd_detail
 
 
 class AssignmentResource:
@@ -107,9 +108,7 @@ class AssignmentResource:
                     description=reason,
                 )
 
-            assignment_id = repo.assign_container(
-                user_id, container_id, conn=conn
-            )
+            assignment_id = repo.assign_container(user_id, container_id, conn=conn)
 
         # Audit trail: access grants are security-sensitive operations
         # that must leave a trail so admins can trace who was given
@@ -248,7 +247,7 @@ class ContainerDetailByUserResource:
                 description="You do not have access to this container.",
             )
 
-        resp.media = dict(container)
+        resp.media = _enrich_with_lxd_detail(dict(container))
 
     # Admin PATCH and DELETE are delegated to ContainerDetailResource
     # which already contains all the LXD state/limit logic and audit
@@ -263,6 +262,7 @@ class ContainerDetailByUserResource:
     ) -> None:
         """Delegate to ContainerDetailResource (admin: state/limit update)."""
         from backend.resources.containers import ContainerDetailResource
+
         return ContainerDetailResource().on_patch(req, resp, container_id)
 
     def on_delete(
@@ -273,4 +273,5 @@ class ContainerDetailByUserResource:
     ) -> None:
         """Delegate to ContainerDetailResource (admin: delete container)."""
         from backend.resources.containers import ContainerDetailResource
+
         return ContainerDetailResource().on_delete(req, resp, container_id)

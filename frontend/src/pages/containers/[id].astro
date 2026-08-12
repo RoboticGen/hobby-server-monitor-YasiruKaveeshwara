@@ -63,12 +63,6 @@ import SiteHeader from "../../components/SiteHeader.astro";
       <div id="detail" hidden>
         <div id="tile"></div>
 
-        <div id="controls" hidden style="margin-top: 1rem">
-          <button id="start-btn" type="button">Start</button>
-          <button id="stop-btn" type="button">Stop</button>
-          <p id="controls-status" style="margin:0.5rem 0 0; color:#555"></p>
-        </div>
-
         <h2>History</h2>
         <!-- Rendered server-side rather than by the script so the control is
              present in the HTML and keyboard-reachable before JS runs. -->
@@ -93,7 +87,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       import { createElement } from "react";
       import { createRoot, type Root } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
-      import MetricTile from "../../components/MetricTile";
+      import ContainerDetailSummary from "../../components/ContainerDetailSummary";
       import HistoryChart from "../../components/HistoryChart";
       import Terminal from "../../components/Terminal";
 
@@ -110,6 +104,11 @@ import SiteHeader from "../../components/SiteHeader.astro";
         limit_cpu: number;
         limit_disk_gb: number;
         deleted_at: string | null;
+        lxd_status?: string;
+        lxd_image?: string;
+        lxd_ip_addresses?: string[];
+        lxd_architecture?: string;
+        lxd_created_at?: string;
       }
 
       /**
@@ -275,10 +274,9 @@ import SiteHeader from "../../components/SiteHeader.astro";
         );
       } else {
         try {
-          // Metadata first: the tile needs the name and the allocated figures
-          // to render, and this call is also what enforces access — it answers
-          // 403 for a container the caller does not own, which is the error
-          // path this page has to handle cleanly.
+          // Metadata first: the detail component needs the name, allocated
+          // limits, and live LXD metadata. This call is also what enforces
+          // access — it answers 403 for a container the caller does not own.
           const container =
             await apiFetch<ContainerRecord>(
               `/api/containers/${encodeURIComponent(containerId)}`,
@@ -290,14 +288,15 @@ import SiteHeader from "../../components/SiteHeader.astro";
           document.title = `${container.lxd_name} · Server Monitor`;
 
           createRoot(tileMount).render(
-            createElement(MetricTile, {
+            createElement(ContainerDetailSummary, {
               containerId: container.id,
-              name: container.lxd_name,
-              // "Unknown" is the tile's documented fallback. This endpoint
-              // returns the DB row without live LXD state, and the tile treats
-              // the value as display text only. Raised as a question in the
-              // step summary rather than worked around here.
-              state: "Unknown",
+              lxdName: container.lxd_name,
+              image: container.image,
+              osImage: container.lxd_image || container.image,
+              ipAddresses: container.lxd_ip_addresses || [],
+              architecture: container.lxd_architecture || "",
+              createdAt: container.lxd_created_at || container.created_at,
+              initialState: container.lxd_status || "Unknown",
               ramAllocatedMb: container.limit_ram_mb,
               diskAllocatedGb: container.limit_disk_gb,
             }),
@@ -316,43 +315,6 @@ import SiteHeader from "../../components/SiteHeader.astro";
           createRoot(terminalMount).render(
             createElement(Terminal, { containerId: container.id }),
           );
-
-          // Unhide and wire the Start/Stop controls.
-          const controls = document.getElementById("controls") as HTMLElement;
-          const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
-          const stopBtn = document.getElementById("stop-btn") as HTMLButtonElement;
-          const controlsStatus = document.getElementById("controls-status") as HTMLElement;
-          controls.hidden = false;
-
-          async function handleAction(action: string) {
-            startBtn.disabled = true;
-            stopBtn.disabled = true;
-            controlsStatus.textContent = `Sending ${action}…`;
-
-            try {
-              await apiFetch(`/api/containers/${encodeURIComponent(container.id)}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action }),
-              });
-
-              controlsStatus.textContent = `Action ${action} sent.`;
-            } catch (err) {
-              controlsStatus.textContent =
-                err instanceof ApiError
-                  ? `${err.status}: ${err.message}`
-                  : `Could not reach the server.`;
-            } finally {
-              // Re-enable after a short delay so the operator sees the result.
-              setTimeout(() => {
-                startBtn.disabled = false;
-                stopBtn.disabled = false;
-              }, 1200);
-            }
-          }
-
-          startBtn.addEventListener("click", () => void handleAction("start"));
-          stopBtn.addEventListener("click", () => void handleAction("stop"));
         } catch (err) {
           // Same split as the dashboard: 401 means no session, so sign in.
           // Everything else — including the 403 this page must handle — is

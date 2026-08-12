@@ -29,6 +29,27 @@ from backend.resources.validation import (
 _CONTAINER_NAME_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+def _extract_ip_addresses(network: dict) -> list[str]:
+    """Extract a list of non-loopback IPv4 addresses from LXD network state."""
+    addresses: list[str] = []
+    if not isinstance(network, dict):
+        return addresses
+
+    for iface in network.values():
+        if not isinstance(iface, dict):
+            continue
+        for addr in iface.get("addresses", []) or []:
+            if (
+                isinstance(addr, dict)
+                and addr.get("family") == "inet"
+                and addr.get("scope") == "global"
+                and addr.get("address")
+            ):
+                addresses.append(addr["address"])
+
+    return addresses
+
+
 def _enrich_with_lxd_state(db_record: dict) -> dict:
     """Merge a DB container record with live LXD state if available.
 
@@ -43,6 +64,33 @@ def _enrich_with_lxd_state(db_record: dict) -> dict:
     else:
         result["lxd_status"] = "Unknown"
         result["lxd_config"] = {}
+    return result
+
+
+def _enrich_with_lxd_detail(db_record: dict) -> dict:
+    """Merge a DB container record with the live details needed for detail view."""
+    result = dict(db_record)
+    lxd_info = lxd_client.get_container_details(db_record["lxd_name"])
+    if lxd_info:
+        config = lxd_info.get("config", {}) or {}
+        result["lxd_status"] = lxd_info.get("status", "Unknown")
+        result["lxd_architecture"] = lxd_info.get("architecture", "")
+        result["lxd_created_at"] = lxd_info.get("created_at", "")
+        result["lxd_image"] = (
+            config.get("image.description")
+            or config.get("image.os")
+            or lxd_info.get("description")
+            or result.get("image", "")
+        )
+        result["lxd_ip_addresses"] = _extract_ip_addresses(
+            lxd_info.get("state", {}).get("network", {}),
+        )
+    else:
+        result["lxd_status"] = "Unknown"
+        result["lxd_architecture"] = ""
+        result["lxd_created_at"] = result.get("created_at", "")
+        result["lxd_image"] = result.get("image", "")
+        result["lxd_ip_addresses"] = []
     return result
 
 
