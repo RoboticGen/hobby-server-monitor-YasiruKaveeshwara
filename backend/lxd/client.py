@@ -322,16 +322,35 @@ def list_storage_pools() -> list[dict]:
     """Return the storage pools available for a container's root disk."""
     try:
         client = _get_client()
-        return sorted(
-            (
+        pools: list[dict] = []
+        gb = 1024 * 1024 * 1024
+
+        for pool in client.storage_pools.all():
+            total_gb = 0.0
+            used_gb = 0.0
+            try:
+                resources = pool.resources.get()
+                space = getattr(resources, "space", {}) or {}
+                total_gb = float(space.get("total") or 0) / gb
+                used_gb = float(space.get("used") or 0) / gb
+            except Exception:
+                # If the per-pool resources shape is unexpected, still return
+                # the pool name so the admin can choose it; disk bounds will
+                # fall back to host-level capacity instead.
+                total_gb = 0.0
+                used_gb = 0.0
+
+            pools.append(
                 {
                     "name": pool.name,
                     "driver": getattr(pool, "driver", ""),
+                    "total_gb": round(total_gb, 2),
+                    "used_gb": round(used_gb, 2),
+                    "available_gb": round(max(0.0, total_gb - used_gb), 2),
                 }
-                for pool in client.storage_pools.all()
-            ),
-            key=lambda item: item["name"],
-        )
+            )
+
+        return sorted(pools, key=lambda item: item["name"])
     except Exception as exc:
         raise LXDUnavailableError(f"Cannot list storage pools from LXD: {exc}") from exc
 

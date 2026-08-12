@@ -298,6 +298,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
               createdAt: container.lxd_created_at || container.created_at,
               initialState: container.lxd_status || "Unknown",
               ramAllocatedMb: container.limit_ram_mb,
+              cpuAllocated: container.limit_cpu,
               diskAllocatedGb: container.limit_disk_gb,
             }),
           );

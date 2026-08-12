@@ -12,6 +12,7 @@ interface ContainerDetailSummaryProps {
 	createdAt: string;
 	initialState: string;
 	ramAllocatedMb: number;
+	cpuAllocated: number;
 	diskAllocatedGb: number;
 }
 
@@ -72,6 +73,7 @@ export default function ContainerDetailSummary({
 	createdAt,
 	initialState,
 	ramAllocatedMb,
+	cpuAllocated,
 	diskAllocatedGb,
 }: ContainerDetailSummaryProps) {
 	const [point, setPoint] = useState<MetricPoint | null>(null);
@@ -79,6 +81,9 @@ export default function ContainerDetailSummary({
 	const [status, setStatus] = useState(initialState);
 	const [currentOsImage, setCurrentOsImage] = useState(osImage);
 	const [currentIpAddresses, setCurrentIpAddresses] = useState(ipAddresses);
+	const [limitRamMb, setLimitRamMb] = useState<number>(ramAllocatedMb);
+	const [limitCpu, setLimitCpu] = useState<number>(cpuAllocated);
+	const [limitDiskGb, setLimitDiskGb] = useState<number>(diskAllocatedGb);
 	const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -93,6 +98,74 @@ export default function ContainerDetailSummary({
 			setCurrentIpAddresses(details.lxd_ip_addresses || []);
 		} catch {
 			// Keep the last known metadata rather than overwriting it with an error.
+		}
+	};
+
+	const handleAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
+		setBusy(true);
+		setActionMessage(`Sending ${action}…`);
+
+		try {
+			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ action }),
+			});
+
+			await refreshMetadata();
+			setActionMessage(`Action ${action} successful.`);
+		} catch (err) {
+			setActionMessage(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
+		} finally {
+			setBusy(false);
+			window.setTimeout(() => setActionMessage(null), 3000);
+		}
+	};
+
+	const handleLimitUpdate = async (): Promise<void> => {
+		setBusy(true);
+		setActionMessage("Updating limits…");
+
+		try {
+			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					limits: {
+						ram_mb: limitRamMb,
+						cpu: limitCpu,
+						disk_gb: limitDiskGb,
+					},
+				}),
+			});
+
+			setActionMessage("Resource limits updated successfully.");
+		} catch (err) {
+			setActionMessage(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
+		} finally {
+			setBusy(false);
+			window.setTimeout(() => setActionMessage(null), 3000);
+		}
+	};
+
+	const handleDelete = async (): Promise<void> => {
+		if (!window.confirm(`Delete container '${lxdName}'? This action is permanent.`)) {
+			return;
+		}
+
+		setBusy(true);
+		setActionMessage("Deleting container…");
+
+		try {
+			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
+				method: "DELETE",
+			});
+
+			window.location.replace("/admin");
+		} catch (err) {
+			setActionMessage(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
+		} finally {
+			setBusy(false);
 		}
 	};
 
@@ -136,27 +209,6 @@ export default function ContainerDetailSummary({
 			window.clearInterval(timerId);
 		};
 	}, [containerId]);
-
-	const handleAction = async (action: "start" | "stop") => {
-		setBusy(true);
-		setActionMessage(`Sending ${action}…`);
-
-		try {
-			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
-				method: "PATCH",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ action }),
-			});
-
-			await refreshMetadata();
-			setActionMessage(`Action ${action} successful.`);
-		} catch (err) {
-			setActionMessage(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
-		} finally {
-			setBusy(false);
-			window.setTimeout(() => setActionMessage(null), 3000);
-		}
-	};
 
 	const uptimeMs = Date.now() - Date.parse(createdAt);
 
@@ -216,10 +268,64 @@ export default function ContainerDetailSummary({
 						<button type='button' onClick={() => void handleAction("stop")} disabled={busy}>
 							Stop
 						</button>
+						<button type='button' onClick={() => void handleAction("restart")} disabled={busy}>
+							Restart
+						</button>
+						<button type='button' onClick={() => void handleAction("freeze")} disabled={busy}>
+							Freeze
+						</button>
+						<button type='button' onClick={() => void handleAction("unfreeze")} disabled={busy}>
+							Unfreeze
+						</button>
+					</div>
+
+					<div className='limit-editor'>
+						<h4>Resource limits</h4>
+						<label>
+							RAM (MB)
+							<input
+								type='number'
+								min={256}
+								step={256}
+								value={limitRamMb}
+								onChange={(event) => setLimitRamMb(Number(event.target.value))}
+								disabled={busy}
+							/>
+						</label>
+						<label>
+							CPU
+							<input
+								type='number'
+								min={1}
+								step={1}
+								value={limitCpu}
+								onChange={(event) => setLimitCpu(Number(event.target.value))}
+								disabled={busy}
+							/>
+						</label>
+						<label>
+							Disk (GB)
+							<input
+								type='number'
+								min={1}
+								step={1}
+								value={limitDiskGb}
+								onChange={(event) => setLimitDiskGb(Number(event.target.value))}
+								disabled={busy}
+							/>
+						</label>
+						<button type='button' onClick={() => void handleLimitUpdate()} disabled={busy}>
+							Apply limits
+						</button>
+					</div>
+
+					<div className='danger-row'>
+						<button type='button' className='danger-button' onClick={() => void handleDelete()} disabled={busy}>
+							Delete container
+						</button>
 					</div>
 
 					{actionMessage && <p className='action-message'>{actionMessage}</p>}
-					{lastUpdated && <p className='updated-text'>{lastUpdated}</p>}
 				</div>
 			</div>
 		</section>

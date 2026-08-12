@@ -63,6 +63,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       import { createRoot, type Root } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
       import InviteUserForm from "../../components/InviteUserForm";
+      import UserAccountEditor from "../../components/UserAccountEditor";
       import UserQuotaEditor from "../../components/UserQuotaEditor";
       import AssignmentToggle, {
         type AssignmentState,
@@ -185,6 +186,24 @@ import SiteHeader from "../../components/SiteHeader.astro";
         // rather than to one column of it.
         cell.colSpan = 7;
         row.appendChild(cell);
+
+        const accountHeading = document.createElement("h3");
+        accountHeading.textContent = `Account access — ${user.email}`;
+        cell.appendChild(accountHeading);
+
+        const accountMount = document.createElement("div");
+        cell.appendChild(accountMount);
+        const accountRoot = createRoot(accountMount);
+        mountedRoots.push(accountRoot);
+        accountRoot.render(
+          createElement(UserAccountEditor, {
+            userId: user.id,
+            email: user.email,
+            role: user.role,
+            status: user.status as "invited" | "active" | "revoked",
+            onSaved: refreshUsers,
+          }),
+        );
 
         const quotaHeading = document.createElement("h3");
         quotaHeading.textContent = `Quota — ${user.email}`;
@@ -513,6 +532,64 @@ import SiteHeader from "../../components/SiteHeader.astro";
         max-width: 46rem;
         font-size: 0.8rem;
         color: #555;
+      }
+
+      :global(.account-editor) {
+        display: grid;
+        grid-template-columns: auto minmax(10rem, 18rem);
+        align-items: center;
+        gap: 0.4rem 0.7rem;
+        max-width: 34rem;
+      }
+
+      :global(.account-editor h3),
+      :global(.account-editor .hint),
+      :global(.account-editor .error),
+      :global(.account-editor .success) {
+        grid-column: 1 / -1;
+      }
+
+      :global(.account-editor label) {
+        font-size: 0.85rem;
+        font-weight: 600;
+      }
+
+      :global(.account-editor select) {
+        font: inherit;
+        width: 12rem;
+        padding: 0.3rem 0.4rem;
+      }
+
+      :global(.account-editor button) {
+        font: inherit;
+        justify-self: start;
+        margin-top: 0.6rem;
+        padding: 0.4rem 0.9rem;
+        cursor: pointer;
+      }
+
+      :global(.account-editor .danger) {
+        border: 1px solid #a12;
+        color: #a12;
+        background: #fff;
+      }
+
+      :global(.account-editor .hint) {
+        margin: 0;
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      :global(.account-editor .error) {
+        margin: 0.3rem 0 0;
+        color: #a12;
+        font-size: 0.9rem;
+      }
+
+      :global(.account-editor .success) {
+        margin: 0.3rem 0 0;
+        color: #161;
+        font-size: 0.9rem;
       }
 
       .assignments {

@@ -68,7 +68,13 @@ interface CreatedContainer {
 interface LxdOptionsResponse {
 	images: { alias: string; description: string }[];
 	networks: { name: string; type: string; managed: boolean }[];
-	storage_pools: { name: string; driver: string }[];
+	storage_pools: {
+		name: string;
+		driver: string;
+		total_gb: number;
+		used_gb: number;
+		available_gb: number;
+	}[];
 	/** True when the lists are empty because LXD could not be reached. */
 	stale: boolean;
 	lxd_error: string | null;
@@ -102,24 +108,14 @@ export interface CreateContainerFormProps {
 const FALLBACK_MAX_RAM_MB = 4096;
 const FALLBACK_MAX_CPU = 8;
 const FALLBACK_MAX_DISK_GB = 100;
-
-/** Slider granularity. RAM in 256MB steps keeps the control usable at 64GB. */
 const RAM_STEP_MB = 256;
 
+/** Slider granularity. RAM in 256MB steps keeps the control usable at 64GB. */
+
 /**
- * Image aliases offered as autocomplete hints.
- *
- * A plain suggestion list, deliberately NOT presented as the set of valid
- * images: the field stays free-text so any alias LXD accepts can be typed.
- * PROJECT-PLAN 5.2 wants this list fetched from LXD at runtime; the backend
- * now serves it via GET /api/lxd/options, but that endpoint only sees images
- * already cached locally on the host — remote aliases like 'ubuntu:22.04'
- * resolve through the CLI's remotes, which the LXD HTTP API does not expose.
- * A fresh host returns an empty cache, so the dropdown would be empty even
- * though thousands of images are installable. The suggestions below fill
- * that gap; the live list, when non-empty, is appended to them.
+ * When LXD reports cached images, the form only allows choosing from that
+ * discovered list. This makes the image selection strict and avoids guesses.
  */
-const IMAGE_SUGGESTIONS = ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "alpine:3.20"];
 
 /**
  * Compute how much of the host is still unallocated.
@@ -163,22 +159,26 @@ function computeRemainingQuota(user: UserAccountingRow): Headroom {
 	};
 }
 
-function computeEffectiveHeadroom(accounting: AccountingResponse | null, selectedAssigneeId: string): Headroom {
-	const hostHeadroom = computeHostHeadroom(accounting);
+function computeEffectiveHeadroom(
+	accounting: AccountingResponse | null,
+	selectedAssigneeId: string,
+	hostHeadroom: Headroom,
+	selectedPoolDiskGb: number,
+): Headroom {
 	if (!accounting || !selectedAssigneeId) {
-		return hostHeadroom;
+		return {
+			ramMb: hostHeadroom.ramMb,
+			cpu: hostHeadroom.cpu,
+			diskGb: Math.min(hostHeadroom.diskGb, selectedPoolDiskGb),
+		};
 	}
 
 	const assignee = accounting.users.find((user) => user.id === selectedAssigneeId);
-	if (!assignee) {
-		return hostHeadroom;
-	}
-
-	const quotaHeadroom = computeRemainingQuota(assignee);
+	const quotaHeadroom = assignee ? computeRemainingQuota(assignee) : hostHeadroom;
 	return {
 		ramMb: Math.min(hostHeadroom.ramMb, quotaHeadroom.ramMb),
 		cpu: Math.min(hostHeadroom.cpu, quotaHeadroom.cpu),
-		diskGb: Math.min(hostHeadroom.diskGb, quotaHeadroom.diskGb),
+		diskGb: Math.min(hostHeadroom.diskGb, quotaHeadroom.diskGb, selectedPoolDiskGb),
 	};
 }
 
@@ -190,8 +190,7 @@ function formatRam(mb: number): string {
 export default function CreateContainerForm({ onCreated }: CreateContainerFormProps) {
 	// --- Form fields ---
 	const [name, setName] = useState<string>("");
-	const [image, setImage] = useState<string>(IMAGE_SUGGESTIONS[0]);
-	const [useCustomImage, setUseCustomImage] = useState<boolean>(false);
+	const [image, setImage] = useState<string>("");
 	const [assigneeId, setAssigneeId] = useState<string>("");
 	const [ramMb, setRamMb] = useState<number>(512);
 	const [cpu, setCpu] = useState<number>(1);
@@ -216,9 +215,11 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	const lxdError = options?.lxd_error ?? null;
 
 	const hostHeadroom = computeHostHeadroom(accounting);
-	const effectiveHeadroom = computeEffectiveHeadroom(accounting, assigneeId);
 	const selectedAssignee = accounting?.users.find((user) => user.id === assigneeId) ?? null;
 	const selectedQuota = selectedAssignee ? computeRemainingQuota(selectedAssignee) : null;
+	const selectedStoragePool = options?.storage_pools.find((pool) => pool.name === storagePool) ?? null;
+	const selectedPoolDiskGb = selectedStoragePool?.available_gb ?? hostHeadroom.diskGb;
+	const effectiveHeadroom = computeEffectiveHeadroom(accounting, assigneeId, hostHeadroom, selectedPoolDiskGb);
 	const canCreate =
 		effectiveHeadroom.ramMb >= RAM_STEP_MB && effectiveHeadroom.cpu >= 1 && effectiveHeadroom.diskGb >= 1;
 
@@ -384,73 +385,38 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 			<p className='hint'>Lowercase letters, digits and hyphens. Must start with a letter.</p>
 
 			<label htmlFor='container-image'>Image</label>
-			{/* If the host reports cached images, present them as a dropdown so
-					admins can see which real images are available. A "Custom..."
-					option preserves the previous free-text behaviour for remote aliases. */}
+			{/* When cached images are available, the form only lets the admin choose from that runtime-discovered list. This prevents free-form guesses. */}
 			{options && options.images && options.images.length > 0 ?
-				<>
-					<select
-						id='container-image-select'
-						name='image_select'
-						value={
-							options.images.some((e) => e.alias === image) ? image
-							: useCustomImage ?
-								"__custom__"
-							:	""
-						}
-						required
-						onChange={(event) => {
-							const v = event.target.value;
-							if (v === "__custom__") {
-								setUseCustomImage(true);
-								setImage("");
-							} else {
-								setUseCustomImage(false);
-								setImage(v);
-							}
-						}}>
-						<option value=''>Choose an image…</option>
-						{options.images.map((entry) => (
-							<option key={entry.alias} value={entry.alias}>
-								{entry.alias}
-								{entry.description ? ` — ${entry.description}` : ""}
-							</option>
-						))}
-						<option value='__custom__'>Custom alias…</option>
+				<select
+					id='container-image-select'
+					name='image'
+					value={image}
+					required
+					onChange={(event) => setImage(event.target.value)}>
+					<option value=''>Choose an image…</option>
+					{options.images.map((entry) => (
+						<option key={entry.alias} value={entry.alias}>
+							{entry.alias}
+							{entry.description ? ` — ${entry.description}` : ""}
+						</option>
+					))}
+				</select>
+			:	<>
+					<select id='container-image-select' name='image' disabled>
+						<option value=''>No cached images available</option>
 					</select>
-					{useCustomImage && (
-						<input
-							id='container-image'
-							name='image'
-							value={image}
-							required
-							onChange={(event) => setImage(event.target.value)}
-							placeholder='ubuntu:22.04 or myremote:myimage'
-						/>
+					{options?.stale && (
+						<p className='hint' role='status'>
+							Cannot confirm host images because LXD is unreachable. Please retry when LXD is available.
+						</p>
+					)}
+					{options === null && (
+						<p className='hint' role='status'>
+							Image discovery failed. Refresh to try again.
+						</p>
 					)}
 				</>
-			:	<>
-					<input
-						id='container-image'
-						name='image'
-						list='image-suggestions'
-						value={image}
-						required
-						onChange={(event) => setImage(event.target.value)}
-					/>
-					<datalist id='image-suggestions'>
-						{(options?.images ?? []).map((entry) => (
-							<option key={entry.alias} value={entry.alias} />
-						))}
-						{IMAGE_SUGGESTIONS.filter((alias) => !(options?.images ?? []).some((entry) => entry.alias === alias)).map(
-							(alias) => (
-								<option key={alias} value={alias} />
-							),
-						)}
-					</datalist>
-				</>
 			}
-
 			{accounting?.users && accounting.users.length > 0 && (
 				<>
 					<label htmlFor='container-assignee'>Assign to user</label>
@@ -517,6 +483,7 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 
 			<label htmlFor='container-disk'>
 				Disk: {diskGb} GB of {effectiveHeadroom.diskGb} GB available
+				{selectedStoragePool ? ` on pool ${selectedStoragePool.name}` : ""}
 			</label>
 			<input
 				id='container-disk'
@@ -566,6 +533,7 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 					<option key={entry.name} value={entry.name}>
 						{entry.name}
 						{entry.driver ? ` (${entry.driver})` : ""}
+						{entry.available_gb !== undefined ? ` — ${entry.available_gb}GB available` : ""}
 					</option>
 				))}
 			</select>
