@@ -53,6 +53,50 @@ type LogOutcome =
 /** An outcome once it is in the log, with a stable key for React. */
 type LogEntry = LogOutcome & { id: number };
 
+type QuickCommand = {
+	label: string;
+	command: string;
+	description: string;
+};
+
+const QUICK_COMMANDS: QuickCommand[] = [
+	{
+		label: "Who am I",
+		command: "whoami",
+		description: "Confirm the container user identity.",
+	},
+	{
+		label: "System info",
+		command: "uname -a",
+		description: "Show kernel and platform details.",
+	},
+	{
+		label: "Working dir",
+		command: "pwd",
+		description: "Show the current working directory.",
+	},
+	{
+		label: "Files",
+		command: "ls -la",
+		description: "List files in the current directory.",
+	},
+	{
+		label: "Disk usage",
+		command: "df -h",
+		description: "Check disk usage in human-readable form.",
+	},
+	{
+		label: "Memory",
+		command: "free -h",
+		description: "Check memory usage in human-readable form.",
+	},
+	{
+		label: "OS release",
+		command: "cat /etc/os-release",
+		description: "Read the container OS metadata.",
+	},
+];
+
 export interface TerminalProps {
 	/** Container UUID — the {container_id} in the exec path. */
 	containerId: string;
@@ -73,6 +117,7 @@ export default function Terminal({ containerId }: TerminalProps) {
 	const [commandText, setCommandText] = useState<string>("");
 	const [log, setLog] = useState<LogEntry[]>([]);
 	const [running, setRunning] = useState<boolean>(false);
+	const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
 
 	// Keys come from a counter rather than the array index so an entry keeps
 	// its identity no matter what happens to the list around it.
@@ -97,6 +142,19 @@ export default function Terminal({ containerId }: TerminalProps) {
 	function appendEntry(outcome: LogOutcome): void {
 		const entry: LogEntry = { ...outcome, id: nextId.current++ };
 		setLog((previous) => [...previous, entry]);
+	}
+
+	function loadCommand(command: string): void {
+		setCommandText(command);
+	}
+
+	async function copyCommand(command: string): Promise<void> {
+		try {
+			await navigator.clipboard.writeText(command);
+			setCopiedCommand(command);
+		} catch {
+			setCopiedCommand(null);
+		}
 	}
 
 	/**
@@ -148,14 +206,11 @@ export default function Terminal({ containerId }: TerminalProps) {
 		setCommandText("");
 
 		try {
-			const result = await apiFetch<ExecResponse>(
-				`/api/containers/${encodeURIComponent(containerId)}/exec`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ command: argv }),
-				},
-			);
+			const result = await apiFetch<ExecResponse>(`/api/containers/${encodeURIComponent(containerId)}/exec`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ command: argv }),
+			});
 
 			appendEntry({
 				kind: "result",
@@ -176,9 +231,9 @@ export default function Terminal({ containerId }: TerminalProps) {
 				kind: "error",
 				argv,
 				message:
-					err instanceof ApiError
-						? `Request failed (${err.status}): ${err.message}`
-						: "Could not reach the server to run the command.",
+					err instanceof ApiError ?
+						`Request failed (${err.status}): ${err.message}`
+					:	"Could not reach the server to run the command.",
 			});
 		} finally {
 			// In `finally` so a refused command re-enables Run instead of
@@ -220,51 +275,92 @@ export default function Terminal({ containerId }: TerminalProps) {
 				{stderr && <span className='stderr'>{`${stderr}\n`}</span>}
 				{/* Shown even on success: a command that prints nothing and exits
 				    0 would otherwise leave no evidence it ran at all. */}
-				<span className={entry.exitCode === 0 ? "exit" : "exit failure"}>
-					{`exit ${entry.exitCode}\n`}
-				</span>
+				<span className={entry.exitCode === 0 ? "exit" : "exit failure"}>{`exit ${entry.exitCode}\n`}</span>
 				{"\n"}
 			</span>
 		);
 	}
 
 	return (
-		<div className='terminal'>
-			<form className='terminal-input' onSubmit={handleSubmit}>
-				<label htmlFor={`terminal-command-${containerId}`}>Command</label>
-				<input
-					id={`terminal-command-${containerId}`}
-					type='text'
-					value={commandText}
-					placeholder='ls -la /etc'
-					autoComplete='off'
-					spellCheck={false}
-					// Deliberately NOT disabled while running: disabling a focused
-					// input hands focus back to the document, so after every
-					// command the cursor would have to be clicked into place again.
-					// handleSubmit guards the in-flight case instead.
-					onChange={(event) => setCommandText(event.target.value)}
-				/>
-				<button type='submit' disabled={running || commandText.trim() === ""}>
-					{running ? "Running…" : "Run"}
-				</button>
-			</form>
+		<div className='terminal-shell'>
+			<header className='terminal-bar' aria-label='Terminal header'>
+				<div className='terminal-dots' aria-hidden='true'>
+					<span />
+					<span />
+					<span />
+				</div>
+				<div className='terminal-title'>Container terminal</div>
+				<div className='terminal-status'>{running ? "Running command" : "Ready"}</div>
+			</header>
 
-			{/* Stated up front rather than discovered by a confused user, since
-			    the whitespace split is not what a shell would do. */}
-			<p className='hint'>
-				One command per run, split on spaces and sent as an array. Quoting is not
-				supported, and nothing carries over between commands — there is no shell
-				session here.
-			</p>
+			<section className='terminal-panel'>
+				<div className='terminal-examples' aria-label='Example commands'>
+					<div className='terminal-examples-header'>
+						<strong>Quick commands</strong>
+						<span>Click a command to load it, or copy it to paste manually.</span>
+					</div>
+					<div className='terminal-examples-grid'>
+						{QUICK_COMMANDS.map((example) => (
+							<div className='terminal-example' key={example.command}>
+								<div className='terminal-example-copy'>
+									<code>{example.command}</code>
+									<button
+										type='button'
+										onClick={() => copyCommand(example.command)}
+										aria-label={`Copy ${example.command}`}>
+										Copy
+									</button>
+								</div>
+								<div className='terminal-example-meta'>
+									<span>{example.label}</span>
+									<p>{example.description}</p>
+								</div>
+								<button type='button' className='terminal-example-run' onClick={() => loadCommand(example.command)}>
+									Use
+								</button>
+							</div>
+						))}
+					</div>
+					<div className='terminal-clipboard-status' aria-live='polite'>
+						{copiedCommand ? `Copied ${copiedCommand}` : ""}
+					</div>
+				</div>
 
-			{/* role="log" is the live-region role for exactly this: an
-			    append-only transcript. It tells assistive tech to announce new
-			    output without re-reading the whole history. tabIndex makes the
-			    scrolling region reachable by keyboard. */}
-			<pre className='terminal-log' ref={logRef} role='log' aria-label='Command output' tabIndex={0}>
-				{log.length === 0 ? "No commands run yet." : log.map(renderEntry)}
-			</pre>
+				<form className='terminal-input' onSubmit={handleSubmit}>
+					<label htmlFor={`terminal-command-${containerId}`}>Command</label>
+					<input
+						id={`terminal-command-${containerId}`}
+						type='text'
+						value={commandText}
+						placeholder='ls -la /etc'
+						autoComplete='off'
+						spellCheck={false}
+						// Deliberately NOT disabled while running: disabling a focused
+						// input hands focus back to the document, so after every
+						// command the cursor would have to be clicked into place again.
+						// handleSubmit guards the in-flight case instead.
+						onChange={(event) => setCommandText(event.target.value)}
+					/>
+					<button type='submit' disabled={running || commandText.trim() === ""}>
+						{running ? "Running…" : "Run"}
+					</button>
+				</form>
+
+				{/* Stated up front rather than discovered by a confused user, since
+				    the whitespace split is not what a shell would do. */}
+				<p className='hint'>
+					One command per run, split on spaces and sent as an array. Quoting is not supported, and nothing carries over
+					between commands — there is no shell session here.
+				</p>
+
+				{/* role="log" is the live-region role for exactly this: an
+				    append-only transcript. It tells assistive tech to announce new
+				    output without re-reading the whole history. tabIndex makes the
+				    scrolling region reachable by keyboard. */}
+				<pre className='terminal-log' ref={logRef} role='log' aria-label='Command output' tabIndex={0}>
+					{log.length === 0 ? "No commands run yet." : log.map(renderEntry)}
+				</pre>
+			</section>
 		</div>
 	);
 }
