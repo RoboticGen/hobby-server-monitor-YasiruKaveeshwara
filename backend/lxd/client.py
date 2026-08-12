@@ -12,9 +12,30 @@ is unreachable — they return None/False/empty rather than crashing, and
 leave error handling to their callers.
 """
 
+from urllib.parse import urlparse
+
 import pylxd
 
 from backend.config import config
+
+
+def _normalize_lxd_endpoint(endpoint: str) -> str:
+    """Normalize the configured LXD endpoint for pylxd.
+
+    pylxd accepts a raw unix socket filesystem path, not a URI with
+    the `unix://` scheme. This helper rewrites both `unix://...` and
+    `unix:///...` forms into a bare path that pylxd accepts.
+    """
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "unix":
+        return endpoint
+
+    # unix://var/snap/lxd/common/lxd/unix.socket parses as netloc='var'
+    # and path='/snap/...'. Reconstruct the true filesystem path by
+    # prepending a slash when netloc is present.
+    if parsed.netloc:
+        return "/" + parsed.netloc + parsed.path
+    return parsed.path
 
 
 def _get_client() -> pylxd.Client:
@@ -24,13 +45,14 @@ def _get_client() -> pylxd.Client:
     passed for remote HTTPS connections. Otherwise a unix socket
     connection is assumed.
     """
+    endpoint = _normalize_lxd_endpoint(config.lxd_endpoint)
     if config.lxd_cert_path and config.lxd_key_path:
         return pylxd.Client(
-            endpoint=config.lxd_endpoint,
+            endpoint=endpoint,
             cert=(config.lxd_cert_path, config.lxd_key_path),
             verify=False,  # self-signed LXD certs in typical setups
         )
-    return pylxd.Client(endpoint=config.lxd_endpoint)
+    return pylxd.Client(endpoint=endpoint)
 
 
 def check_lxd_reachable() -> bool:
@@ -123,12 +145,23 @@ def create_container(
     Raises on failure (callers should handle this).
     """
     client = _get_client()
+    # Support both image aliases (e.g. 'ubuntu:22.04') and raw image
+    # fingerprints. If the caller supplied a fingerprint, ask LXD to
+    # use it directly rather than a (possibly-missing) alias.
+    source = {"type": "image"}
+    # A simple fingerprint heuristic: hex string of at least 12 chars.
+    # Short fingerprints are commonly used in output listing, so accept
+    # those too.
+    import re
+
+    if isinstance(image, str) and re.fullmatch(r"[0-9a-fA-F]{12,64}", image):
+        source["fingerprint"] = image
+    else:
+        source["alias"] = image
+
     container_config = {
         "name": name,
-        "source": {
-            "type": "image",
-            "alias": image,
-        },
+        "source": source,
         "config": limits,
         # LXD deletes an ephemeral container as soon as it stops, so this
         # is a top-level property rather than a config key.
@@ -191,12 +224,29 @@ def list_images() -> list[dict]:
         client = _get_client()
         images = []
         for image in client.images.all():
-            # One entry per alias, because a single image can carry several
-            # and the form offers aliases rather than fingerprints.
-            for alias in image.aliases or []:
+            # Prefer reporting aliases when present — that's what admins
+            # normally type. But include an entry for an image that has no
+            # alias by exposing its short fingerprint so the form can still
+            # show and select it.
+            aliases = image.aliases or []
+            if aliases:
+                for alias in aliases:
+                    images.append(
+                        {
+                            "alias": alias.get("name", ""),
+                            "description": (
+                                image.properties.get("description", "")
+                                if image.properties
+                                else ""
+                            ),
+                        }
+                    )
+            else:
+                fp = getattr(image, "fingerprint", "") or ""
+                display = fp[:12] if fp else ""
                 images.append(
                     {
-                        "alias": alias.get("name", ""),
+                        "alias": display,
                         "description": (
                             image.properties.get("description", "")
                             if image.properties

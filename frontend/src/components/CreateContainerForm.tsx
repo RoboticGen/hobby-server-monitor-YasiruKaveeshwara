@@ -143,6 +143,7 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	// --- Form fields ---
 	const [name, setName] = useState<string>("");
 	const [image, setImage] = useState<string>(IMAGE_SUGGESTIONS[0]);
+	const [useCustomImage, setUseCustomImage] = useState<boolean>(false);
 	const [ramMb, setRamMb] = useState<number>(512);
 	const [cpu, setCpu] = useState<number>(1);
 	const [diskGb, setDiskGb] = useState<number>(10);
@@ -160,6 +161,10 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	const [submitting, setSubmitting] = useState<boolean>(false);
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState<string | null>(null);
+
+	// Show LXD error messages returned by GET /api/lxd/options so admins
+	// understand why the image list might be empty on this host.
+	const lxdError = options?.lxd_error ?? null;
 
 	const headroom = computeHeadroom(accounting);
 
@@ -310,27 +315,72 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 			<p className='hint'>Lowercase letters, digits and hyphens. Must start with a letter.</p>
 
 			<label htmlFor='container-image'>Image</label>
-			<input
-				id='container-image'
-				name='image'
-				list='image-suggestions'
-				value={image}
-				required
-				onChange={(event) => setImage(event.target.value)}
-			/>
-			<datalist id='image-suggestions'>
-				{/* Locally cached aliases first, then the static fallbacks that
-				    are not already among them — a host with an empty image
-				    cache still gets usable suggestions. */}
-				{(options?.images ?? []).map((entry) => (
-					<option key={entry.alias} value={entry.alias} />
-				))}
-				{IMAGE_SUGGESTIONS.filter((alias) => !(options?.images ?? []).some((entry) => entry.alias === alias)).map(
-					(alias) => (
-						<option key={alias} value={alias} />
-					),
-				)}
-			</datalist>
+			{/* If the host reports cached images, present them as a dropdown so
+					admins can see which real images are available. A "Custom..."
+					option preserves the previous free-text behaviour for remote aliases. */}
+			{options && options.images && options.images.length > 0 ?
+				<>
+					<select
+						id='container-image-select'
+						name='image_select'
+						value={
+							options.images.some((e) => e.alias === image) ? image
+							: useCustomImage ?
+								"__custom__"
+							:	""
+						}
+						required
+						onChange={(event) => {
+							const v = event.target.value;
+							if (v === "__custom__") {
+								setUseCustomImage(true);
+								setImage("");
+							} else {
+								setUseCustomImage(false);
+								setImage(v);
+							}
+						}}>
+						<option value=''>Choose an image…</option>
+						{options.images.map((entry) => (
+							<option key={entry.alias} value={entry.alias}>
+								{entry.alias}
+								{entry.description ? ` — ${entry.description}` : ""}
+							</option>
+						))}
+						<option value='__custom__'>Custom alias…</option>
+					</select>
+					{useCustomImage && (
+						<input
+							id='container-image'
+							name='image'
+							value={image}
+							required
+							onChange={(event) => setImage(event.target.value)}
+							placeholder='ubuntu:22.04 or myremote:myimage'
+						/>
+					)}
+				</>
+			:	<>
+					<input
+						id='container-image'
+						name='image'
+						list='image-suggestions'
+						value={image}
+						required
+						onChange={(event) => setImage(event.target.value)}
+					/>
+					<datalist id='image-suggestions'>
+						{(options?.images ?? []).map((entry) => (
+							<option key={entry.alias} value={entry.alias} />
+						))}
+						{IMAGE_SUGGESTIONS.filter((alias) => !(options?.images ?? []).some((entry) => entry.alias === alias)).map(
+							(alias) => (
+								<option key={alias} value={alias} />
+							),
+						)}
+					</datalist>
+				</>
+			}
 
 			<label htmlFor='container-ram'>
 				RAM: {formatRam(ramMb)} of {formatRam(headroom.ramMb)} available
@@ -414,6 +464,23 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 			{(options === null || options.stale) && (
 				<p className='hint' role='status'>
 					Could not read the host's networks and storage pools, so only the default profile is offered.
+				</p>
+			)}
+
+			{/* Surface LXD-level errors (e.g., socket not found) so an admin can
+				see why the dropdowns are empty instead of guessing. */}
+			{lxdError && (
+				<p className='hint error' role='status'>
+					Could not read host images: {lxdError}
+				</p>
+			)}
+
+			{/* When LXD was reachable but returned no cached images, tell the
+				admin so they can import an image on the host (e.g. `lxc image copy`). */}
+			{!options?.stale && Array.isArray(options?.images) && options.images.length === 0 && (
+				<p className='hint' role='status'>
+					No locally cached images found on this host. Import an image on the host (for example: `lxc image copy
+					images:ubuntu/22.04 local: --alias ubuntu:22.04`) and reload this page.
 				</p>
 			)}
 

@@ -49,11 +49,15 @@ class Config:
 
     # LXD connection
     lxd_endpoint: str
-    lxd_cert_path: str   # Empty string when using a unix socket
-    lxd_key_path: str    # Empty string when using a unix socket
+    lxd_cert_path: str  # Empty string when using a unix socket
+    lxd_key_path: str  # Empty string when using a unix socket
 
     # Background collector interval in seconds
     collector_interval_seconds: int
+
+    # Access token lifetime in minutes — this controls how long the JWT and
+    # its cookie remain valid before the browser must refresh them.
+    access_token_lifetime_minutes: int
 
     # Frontend origin — used for CORS and cookie domain settings
     frontend_origin: str
@@ -128,16 +132,14 @@ def load_config() -> Config:
         tinyflux_path=Path(_require("TINYFLUX_PATH")),
         lxd_endpoint=_require("LXD_ENDPOINT"),
         frontend_origin=_require("FRONTEND_ORIGIN"),
-
         # --- Optional variables: sensible defaults for development ---
         lxd_cert_path=_optional("LXD_CERT_PATH", ""),
         lxd_key_path=_optional("LXD_KEY_PATH", ""),
-        collector_interval_seconds=int(
-            _optional("COLLECTOR_INTERVAL_SECONDS", "10")
+        collector_interval_seconds=int(_optional("COLLECTOR_INTERVAL_SECONDS", "10")),
+        access_token_lifetime_minutes=int(
+            _optional("ACCESS_TOKEN_LIFETIME_MINUTES", "30")
         ),
-        session_cookie_secure=_parse_bool(
-            _optional("SESSION_COOKIE_SECURE", "false")
-        ),
+        session_cookie_secure=_parse_bool(_optional("SESSION_COOKIE_SECURE", "false")),
         port=int(_optional("PORT", "8000")),
     )
 

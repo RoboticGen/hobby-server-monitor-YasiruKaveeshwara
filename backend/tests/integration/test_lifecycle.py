@@ -20,6 +20,7 @@ Tests share module-scoped state deliberately and run in declaration order.
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pylxd
 import pytest
 from falcon import testing
 
@@ -50,9 +51,7 @@ def _cookies(result) -> dict:
     Falcon parses Set-Cookie into result.cookies (name -> Cookie), which also
     carries the httpOnly/SameSite/Secure flags asserted on in step 1.
     """
-    assert result.cookies, (
-        f"response set no cookies (status {result.status_code})"
-    )
+    assert result.cookies, f"response set no cookies (status {result.status_code})"
     return {name: c.value for name, c in result.cookies.items()}
 
 
@@ -75,11 +74,13 @@ class TestFullLifecycle:
         object.__setattr__(config, "admin_bootstrap_email", ADMIN_EMAIL)
 
         monkeypatch.setattr(
-            auth_module, "exchange_code_for_tokens",
+            auth_module,
+            "exchange_code_for_tokens",
             lambda code: {"id_token": "fake-id-token"},
         )
         monkeypatch.setattr(
-            auth_module, "verify_and_decode_id_token",
+            auth_module,
+            "verify_and_decode_id_token",
             lambda tok: {"email": ADMIN_EMAIL, "email_verified": True},
         )
 
@@ -117,27 +118,29 @@ class TestFullLifecycle:
         for name in ("access_token", "refresh_token"):
             cookie = result.cookies[name]
             assert cookie.http_only is True, f"{name} is not httpOnly"
-            assert cookie.same_site.lower() == "lax", (
-                f"{name} SameSite={cookie.same_site!r}"
-            )
-        # The short access-token lifetime is what makes a 15-minute
+            assert (
+                cookie.same_site.lower() == "lax"
+            ), f"{name} SameSite={cookie.same_site!r}"
+        # The short access-token lifetime is what makes a short
         # revocation window rather than a 7-day one.
-        assert result.cookies["access_token"].max_age == 900
+        assert result.cookies["access_token"].max_age == (
+            config.access_token_lifetime_minutes * 60
+        )
 
         STATE["admin_id"] = admin["id"]
-        STATE["admin_headers"] = {
-            "Cookie": f"access_token={cookies['access_token']}"
-        }
+        STATE["admin_headers"] = {"Cookie": f"access_token={cookies['access_token']}"}
         STATE["admin_refresh"] = cookies["refresh_token"]
 
     def test_02_uninvited_email_is_rejected(self, app_client, monkeypatch):
         """An email that is neither invited nor the bootstrap address gets 403."""
         monkeypatch.setattr(
-            auth_module, "exchange_code_for_tokens",
+            auth_module,
+            "exchange_code_for_tokens",
             lambda code: {"id_token": "fake"},
         )
         monkeypatch.setattr(
-            auth_module, "verify_and_decode_id_token",
+            auth_module,
+            "verify_and_decode_id_token",
             lambda tok: {"email": "stranger@example.com"},
         )
 
@@ -149,9 +152,7 @@ class TestFullLifecycle:
 
     def test_03_me_returns_the_admin_profile(self, app_client):
         """The issued cookie authenticates against /api/auth/me."""
-        result = app_client.simulate_get(
-            "/api/auth/me", headers=STATE["admin_headers"]
-        )
+        result = app_client.simulate_get("/api/auth/me", headers=STATE["admin_headers"])
         assert result.status_code == 200
         assert result.json["email"] == ADMIN_EMAIL
         assert result.json["role"] == "admin"
@@ -183,11 +184,13 @@ class TestFullLifecycle:
         gets admin. An invited user signing in must keep role='user'.
         """
         monkeypatch.setattr(
-            auth_module, "exchange_code_for_tokens",
+            auth_module,
+            "exchange_code_for_tokens",
             lambda code: {"id_token": "fake"},
         )
         monkeypatch.setattr(
-            auth_module, "verify_and_decode_id_token",
+            auth_module,
+            "verify_and_decode_id_token",
             lambda tok: {"email": USER_EMAIL},
         )
 
@@ -201,9 +204,7 @@ class TestFullLifecycle:
         assert user["role"] == "user", "invited user must not become admin"
 
         cookies = _cookies(result)
-        STATE["user_headers"] = {
-            "Cookie": f"access_token={cookies['access_token']}"
-        }
+        STATE["user_headers"] = {"Cookie": f"access_token={cookies['access_token']}"}
 
     def test_06_non_admin_cannot_reach_admin_endpoints(self, app_client):
         """A signed-in 'user' is forbidden (403, not 401) from admin routes."""
@@ -222,9 +223,7 @@ class TestFullLifecycle:
             )
 
     # ---------------------------------------------------------------- step 3
-    def test_07_admin_creates_a_container_through_the_api(
-        self, app_client, fake_lxd
-    ):
+    def test_07_admin_creates_a_container_through_the_api(self, app_client, fake_lxd):
         """POST /api/containers creates it in LXD and records it in the DB."""
         name = "lifecycle-web"
         result = app_client.simulate_post(
@@ -255,28 +254,74 @@ class TestFullLifecycle:
     ):
         """Names that break LXD rules are refused with 400 and nothing created."""
         before = set(fake_lxd.containers._store)
-        for bad in ["UPPERCASE", "has spaces", "-leading", "trailing-",
-                    "under_score", "", "a" * 64]:
+        for bad in [
+            "UPPERCASE",
+            "has spaces",
+            "-leading",
+            "trailing-",
+            "under_score",
+            "",
+            "a" * 64,
+        ]:
             result = app_client.simulate_post(
                 "/api/containers",
                 headers=STATE["admin_headers"],
-                json={"name": bad, "image": "ubuntu:22.04",
-                      "limits": {"ram_mb": 256, "cpu": 0.5, "disk_gb": 2}},
+                json={
+                    "name": bad,
+                    "image": "ubuntu:22.04",
+                    "limits": {"ram_mb": 256, "cpu": 0.5, "disk_gb": 2},
+                },
             )
-            assert result.status_code == 400, (
-                f"name {bad!r} was accepted with {result.status_code}"
-            )
-        assert set(fake_lxd.containers._store) == before, (
-            "a rejected name still created a container"
-        )
+            assert (
+                result.status_code == 400
+            ), f"name {bad!r} was accepted with {result.status_code}"
+        assert (
+            set(fake_lxd.containers._store) == before
+        ), "a rejected name still created a container"
 
-    def test_09_duplicate_container_name_conflicts(self, app_client, fake_lxd):
+    def test_09_lxd_validation_rejections_are_mapped_to_400(
+        self, app_client, fake_lxd, monkeypatch
+    ):
+        """When LXD rejects a valid-looking create request, the API returns 400."""
+
+        class FakeResponse:
+            status_code = 400
+
+            def json(self):
+                return {"error": "Image not provided for instance creation"}
+
+            @property
+            def content(self):
+                return b"Image not provided for instance creation"
+
+        def fail_create(config, wait=False):
+            raise pylxd.exceptions.LXDAPIException(FakeResponse())
+
+        monkeypatch.setattr(fake_lxd.containers, "create", fail_create)
+
+        result = app_client.simulate_post(
+            "/api/containers",
+            headers=STATE["admin_headers"],
+            json={
+                "name": "lifecycle-no-image",
+                "image": "ubuntu:22.04",
+                "limits": {"ram_mb": 256, "cpu": 0.5, "disk_gb": 2},
+            },
+        )
+        assert result.status_code == 400, result.json
+        assert result.json["title"] == "Invalid container request"
+        assert "Image not provided for instance creation" in result.json["description"]
+
+    def test_10_duplicate_container_name_conflicts(self, app_client, fake_lxd):
         """Re-using an existing name returns 409, not a second container."""
         result = app_client.simulate_post(
             "/api/containers",
             headers=STATE["admin_headers"],
-            json={"name": STATE["container_name"], "image": "ubuntu:22.04",
-                  "limits": {"ram_mb": 256, "cpu": 0.5, "disk_gb": 2}},
+            json={
+                "name": STATE["container_name"],
+                "image": "ubuntu:22.04",
+                "limits": {"ram_mb": 256, "cpu": 0.5, "disk_gb": 2},
+            },
         )
         assert result.status_code == 409
 
@@ -299,9 +344,7 @@ class TestFullLifecycle:
         )
         assert detail.status_code == 403
 
-    def test_11_nonexistent_container_also_returns_403_for_users(
-        self, app_client
-    ):
+    def test_11_nonexistent_container_also_returns_403_for_users(self, app_client):
         """A non-existent id must be indistinguishable from an unassigned one."""
         result = app_client.simulate_get(
             f"/api/containers/{uuid.uuid4()}", headers=STATE["user_headers"]
@@ -342,8 +385,11 @@ class TestFullLifecycle:
         result = app_client.simulate_post(
             "/api/containers",
             headers=STATE["admin_headers"],
-            json={"name": "lifecycle-big", "image": "ubuntu:22.04",
-                  "limits": {"ram_mb": 1536, "cpu": 0.5, "disk_gb": 5}},
+            json={
+                "name": "lifecycle-big",
+                "image": "ubuntu:22.04",
+                "limits": {"ram_mb": 1536, "cpu": 0.5, "disk_gb": 5},
+            },
         )
         assert result.status_code == 201
         big_id = result.json["id"]
@@ -400,7 +446,8 @@ class TestFullLifecycle:
             pass
 
         monkeypatch.setattr(
-            collector_module.time, "sleep",
+            collector_module.time,
+            "sleep",
             lambda _s: (_ for _ in ()).throw(_StopLoop()),
         )
         fake_lxd.set_down(True)
@@ -476,13 +523,11 @@ class TestFullLifecycle:
         assert bad.status_code == 400
 
     # ---------------------------------------------------------------- step 6
-    def test_21_user_can_exec_in_their_assigned_container(
-        self, app_client, fake_lxd
-    ):
+    def test_21_user_can_exec_in_their_assigned_container(self, app_client, fake_lxd):
         """A valid argv array runs and returns stdout/stderr/exit code."""
-        fake_lxd.containers._store[
-            STATE["container_name"]
-        ].exec_result.stdout = "hello from terminal\n"
+        fake_lxd.containers._store[STATE["container_name"]].exec_result.stdout = (
+            "hello from terminal\n"
+        )
 
         result = app_client.simulate_post(
             f"/api/containers/{STATE['container_id']}/exec",
@@ -496,9 +541,7 @@ class TestFullLifecycle:
         executed = fake_lxd.containers._store[STATE["container_name"]].executed
         assert executed[-1] == ["echo", "hello from terminal"]
 
-    def test_22_string_command_is_refused_before_execution(
-        self, app_client, fake_lxd
-    ):
+    def test_22_string_command_is_refused_before_execution(self, app_client, fake_lxd):
         """A shell-style string is rejected with 400 and nothing runs (7.7)."""
         container = fake_lxd.containers._store[STATE["container_name"]]
         before = len(container.executed)
@@ -509,13 +552,11 @@ class TestFullLifecycle:
             json={"command": "echo hacked; rm -rf /"},
         )
         assert result.status_code == 400
-        assert len(container.executed) == before, (
-            "a string command reached LXD — the injection defense failed"
-        )
+        assert (
+            len(container.executed) == before
+        ), "a string command reached LXD — the injection defense failed"
 
-    def test_23_revoked_access_blocks_the_very_next_exec(
-        self, app_client, fake_lxd
-    ):
+    def test_23_revoked_access_blocks_the_very_next_exec(self, app_client, fake_lxd):
         """Revocation takes effect immediately — no cached authorization.
 
         require_container_access re-checks on every call precisely so a
@@ -541,9 +582,9 @@ class TestFullLifecycle:
             headers=STATE["user_headers"],
             json={"command": ["whoami"]},
         )
-        assert denied.status_code == 403, (
-            "access was still granted after revocation — the check is cached"
-        )
+        assert (
+            denied.status_code == 403
+        ), "access was still granted after revocation — the check is cached"
 
         # The assignment row survives as history rather than being deleted.
         conn = repo.get_connection()
@@ -569,8 +610,10 @@ class TestFullLifecycle:
         """Each state action reaches LXD and is written to the audit log."""
         container = fake_lxd.containers._store[STATE["container_name"]]
         for action, expected_status in [
-            ("start", "Running"), ("freeze", "Frozen"),
-            ("unfreeze", "Running"), ("restart", "Running"),
+            ("start", "Running"),
+            ("freeze", "Frozen"),
+            ("unfreeze", "Running"),
+            ("restart", "Running"),
             ("stop", "Stopped"),
         ]:
             result = app_client.simulate_patch(
@@ -589,9 +632,7 @@ class TestFullLifecycle:
         )
         assert bad.status_code == 400
 
-    def test_25_limit_change_updates_lxd_and_the_db_cache(
-        self, app_client, fake_lxd
-    ):
+    def test_25_limit_change_updates_lxd_and_the_db_cache(self, app_client, fake_lxd):
         """A limit change writes through to LXD and the DB stays in sync.
 
         Drift here would silently corrupt quota math, which reads the DB
@@ -718,9 +759,7 @@ class TestFullLifecycle:
         result = app_client.simulate_get(
             "/api/accounting", headers=STATE["admin_headers"]
         )
-        user_row = next(
-            u for u in result.json["users"] if u["email"] == USER_EMAIL
-        )
+        user_row = next(u for u in result.json["users"] if u["email"] == USER_EMAIL)
         assert user_row["allocation"]["ram_mb"] == 0
         assert user_row["container_count"] == 0
 
@@ -739,9 +778,15 @@ class TestFullLifecycle:
             conn.close()
 
         for required in [
-            "auth.bootstrap_admin", "user.invite", "container.create",
-            "assignment.grant", "assignment.revoke", "container.exec",
-            "container.start", "container.stop", "container.limits",
+            "auth.bootstrap_admin",
+            "user.invite",
+            "container.create",
+            "assignment.grant",
+            "assignment.revoke",
+            "container.exec",
+            "container.start",
+            "container.stop",
+            "container.limits",
             "container.delete",
         ]:
             assert required in actions, f"no audit entry for {required}"
@@ -774,9 +819,7 @@ class TestFullLifecycle:
 
         result = app_client.simulate_post(
             "/api/auth/logout",
-            headers={
-                "Cookie": f"refresh_token={STATE['admin_refresh']}"
-            },
+            headers={"Cookie": f"refresh_token={STATE['admin_refresh']}"},
         )
         assert result.status_code == 200
 
@@ -788,20 +831,20 @@ class TestFullLifecycle:
             ).fetchone()["c"]
         finally:
             conn.close()
-        assert after == before - 1, (
-            "logout did not delete the server-side session row"
-        )
+        assert after == before - 1, "logout did not delete the server-side session row"
 
     def test_35_revoked_user_cannot_sign_back_in(self, app_client, monkeypatch):
         """A revoked user is refused at the OAuth callback."""
         repo.update_user(STATE["user_id"], status="revoked")
 
         monkeypatch.setattr(
-            auth_module, "exchange_code_for_tokens",
+            auth_module,
+            "exchange_code_for_tokens",
             lambda code: {"id_token": "fake"},
         )
         monkeypatch.setattr(
-            auth_module, "verify_and_decode_id_token",
+            auth_module,
+            "verify_and_decode_id_token",
             lambda tok: {"email": USER_EMAIL},
         )
 

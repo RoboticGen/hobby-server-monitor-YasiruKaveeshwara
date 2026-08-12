@@ -60,7 +60,7 @@ def _set_session_cookies(
     resp.set_cookie(
         _ACCESS_COOKIE,
         access_token,
-        max_age=900,  # 15 minutes, matching the JWT's own expiry
+        max_age=config.access_token_lifetime_minutes * 60,
         secure=config.session_cookie_secure,
         http_only=True,
         same_site="Lax",

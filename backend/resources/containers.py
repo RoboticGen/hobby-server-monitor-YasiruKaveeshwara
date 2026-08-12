@@ -10,6 +10,7 @@ craft requests that bypass client-side validation entirely.
 import re
 
 import falcon
+from pylxd.exceptions import LXDAPIException
 
 from backend.auth.middleware import require_role
 from backend.db import repo
@@ -43,6 +44,29 @@ def _enrich_with_lxd_state(db_record: dict) -> dict:
         result["lxd_status"] = "Unknown"
         result["lxd_config"] = {}
     return result
+
+
+def _format_lxd_api_error(exc: LXDAPIException) -> str:
+    """Return a stable, human-readable error message from an LXD API exception."""
+    try:
+        return str(exc)
+    except Exception:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    return (
+                        data.get("error")
+                        or data.get("metadata", {}).get("err")
+                        or response.content.decode("utf-8", errors="ignore")
+                    )
+            except Exception:
+                try:
+                    return response.content.decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+    return "Unknown LXD error"
 
 
 class ContainerListResource:
@@ -195,7 +219,18 @@ class ContainerListResource:
         if ram_mb > 0:
             lxd_limits["limits.memory"] = f"{ram_mb}MB"
         if cpu > 0:
-            lxd_limits["limits.cpu"] = str(cpu)
+            # Format CPU limits for LXD: use an integer string for whole
+            # numbers ("1" not "1.0") and a compact decimal for floats.
+            try:
+                if isinstance(cpu, float) and cpu.is_integer():
+                    cpu_str = str(int(cpu))
+                elif isinstance(cpu, float):
+                    cpu_str = ("%.3f" % cpu).rstrip("0").rstrip(".")
+                else:
+                    cpu_str = str(cpu)
+            except Exception:
+                cpu_str = str(cpu)
+            lxd_limits["limits.cpu"] = cpu_str
         if autostart:
             # LXD models autostart as ordinary container config, not as a
             # top-level property, so it travels with the limits dict.
@@ -212,10 +247,19 @@ class ContainerListResource:
                 ephemeral=ephemeral,
                 description=description,
             )
+        except LXDAPIException as e:
+            # A user-supplied create request failed validation at the LXD API
+            # layer. This is a client error, not an outage. Report it as 400
+            # so the frontend can show the actual LXD rejection reason.
+            lxd_error = _format_lxd_api_error(e)
+            raise falcon.HTTPBadRequest(
+                title="Invalid container request",
+                description=f"LXD rejected the create request: {lxd_error}",
+            )
         except Exception as e:
-            # LXD being unreachable is a service availability issue, not a code bug. Return 503
-            # with a clear message so the frontend can show a retry
-            # prompt, rather than a generic 500 that looks like a crash.
+            # LXD being unreachable is a service availability issue, not a code bug.
+            # Return 503 with a clear message so the frontend can show a retry prompt
+            # rather than a generic 500 that looks like a crash.
             raise falcon.HTTPServiceUnavailable(
                 title="LXD unreachable",
                 description=f"Cannot create container — LXD error: {e}",
@@ -397,7 +441,16 @@ class ContainerDetailResource:
         if new_ram > 0:
             lxd_limits["limits.memory"] = f"{new_ram}MB"
         if new_cpu > 0:
-            lxd_limits["limits.cpu"] = str(new_cpu)
+            try:
+                if isinstance(new_cpu, float) and new_cpu.is_integer():
+                    cpu_str = str(int(new_cpu))
+                elif isinstance(new_cpu, float):
+                    cpu_str = ("%.3f" % new_cpu).rstrip("0").rstrip(".")
+                else:
+                    cpu_str = str(new_cpu)
+            except Exception:
+                cpu_str = str(new_cpu)
+            lxd_limits["limits.cpu"] = cpu_str
 
         # Update limits in LXD
         try:

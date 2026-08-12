@@ -63,6 +63,12 @@ import SiteHeader from "../../components/SiteHeader.astro";
       <div id="detail" hidden>
         <div id="tile"></div>
 
+        <div id="controls" hidden style="margin-top: 1rem">
+          <button id="start-btn" type="button">Start</button>
+          <button id="stop-btn" type="button">Stop</button>
+          <p id="controls-status" style="margin:0.5rem 0 0; color:#555"></p>
+        </div>
+
         <h2>History</h2>
         <!-- Rendered server-side rather than by the script so the control is
              present in the HTML and keyboard-reachable before JS runs. -->
@@ -310,6 +316,43 @@ import SiteHeader from "../../components/SiteHeader.astro";
           createRoot(terminalMount).render(
             createElement(Terminal, { containerId: container.id }),
           );
+
+          // Unhide and wire the Start/Stop controls.
+          const controls = document.getElementById("controls") as HTMLElement;
+          const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
+          const stopBtn = document.getElementById("stop-btn") as HTMLButtonElement;
+          const controlsStatus = document.getElementById("controls-status") as HTMLElement;
+          controls.hidden = false;
+
+          async function handleAction(action: string) {
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+            controlsStatus.textContent = `Sending ${action}…`;
+
+            try {
+              await apiFetch(`/api/containers/${encodeURIComponent(container.id)}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action }),
+              });
+
+              controlsStatus.textContent = `Action ${action} sent.`;
+            } catch (err) {
+              controlsStatus.textContent =
+                err instanceof ApiError
+                  ? `${err.status}: ${err.message}`
+                  : `Could not reach the server.`;
+            } finally {
+              // Re-enable after a short delay so the operator sees the result.
+              setTimeout(() => {
+                startBtn.disabled = false;
+                stopBtn.disabled = false;
+              }, 1200);
+            }
+          }
+
+          startBtn.addEventListener("click", () => void handleAction("start"));
+          stopBtn.addEventListener("click", () => void handleAction("stop"));
         } catch (err) {
           // Same split as the dashboard: 401 means no session, so sign in.
           // Everything else — including the 403 this page must handle — is
