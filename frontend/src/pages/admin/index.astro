@@ -54,6 +54,10 @@ import SiteHeader from "../../components/SiteHeader.astro";
         id: string;
         lxd_name: string;
         image: string;
+        lxd_image: string;
+        lxd_ip_addresses: string[];
+        lxd_created_at: string;
+        lxd_process_count: number;
         limit_ram_mb: number;
         limit_cpu: number;
         limit_disk_gb: number;
@@ -128,6 +132,10 @@ import SiteHeader from "../../components/SiteHeader.astro";
               containerId: container.id,
               name: container.lxd_name,
               state: container.lxd_status,
+              osImage: container.lxd_image || container.image,
+              ipAddresses: container.lxd_ip_addresses || [],
+              createdAt: container.lxd_created_at,
+              processCount: container.lxd_process_count || 0,
               ramAllocatedMb: container.limit_ram_mb,
               diskAllocatedGb: container.limit_disk_gb,
             }),
@@ -296,6 +304,13 @@ import SiteHeader from "../../components/SiteHeader.astro";
       :global(.tile .state) {
         font-size: 0.8rem;
         color: #555;
+      }
+
+      :global(.tile .meta) {
+        margin: 0.35rem 0 0;
+        font-size: 0.78rem;
+        color: #666;
+        overflow-wrap: anywhere;
       }
 
       :global(.tile dl) {

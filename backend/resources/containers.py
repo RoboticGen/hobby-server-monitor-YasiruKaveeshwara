@@ -56,15 +56,7 @@ def _enrich_with_lxd_state(db_record: dict) -> dict:
     If LXD is unreachable or the container doesn't exist in LXD, the
     DB record is returned as-is with a 'lxd_status' of 'Unknown'.
     """
-    result = dict(db_record)
-    lxd_info = lxd_client.get_container(db_record["lxd_name"])
-    if lxd_info:
-        result["lxd_status"] = lxd_info.get("status", "Unknown")
-        result["lxd_config"] = lxd_info.get("config", {})
-    else:
-        result["lxd_status"] = "Unknown"
-        result["lxd_config"] = {}
-    return result
+    return _enrich_with_lxd_detail(db_record)
 
 
 def _enrich_with_lxd_detail(db_record: dict) -> dict:
@@ -73,6 +65,7 @@ def _enrich_with_lxd_detail(db_record: dict) -> dict:
     lxd_info = lxd_client.get_container_details(db_record["lxd_name"])
     if lxd_info:
         config = lxd_info.get("config", {}) or {}
+        state = lxd_info.get("state", {}) or {}
         result["lxd_status"] = lxd_info.get("status", "Unknown")
         result["lxd_architecture"] = lxd_info.get("architecture", "")
         result["lxd_created_at"] = lxd_info.get("created_at", "")
@@ -85,12 +78,14 @@ def _enrich_with_lxd_detail(db_record: dict) -> dict:
         result["lxd_ip_addresses"] = _extract_ip_addresses(
             lxd_info.get("state", {}).get("network", {}),
         )
+        result["lxd_process_count"] = int(state.get("processes", 0) or 0)
     else:
         result["lxd_status"] = "Unknown"
         result["lxd_architecture"] = ""
         result["lxd_created_at"] = result.get("created_at", "")
         result["lxd_image"] = result.get("image", "")
         result["lxd_ip_addresses"] = []
+        result["lxd_process_count"] = 0
     return result
 
 
