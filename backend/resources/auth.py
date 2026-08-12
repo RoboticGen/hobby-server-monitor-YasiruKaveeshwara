@@ -29,6 +29,7 @@ from backend.auth.oauth import (
 )
 from backend.config import config
 from backend.db import repo
+from backend.lxd.quota import compute_user_allocation
 
 # Module-level logger, matching the collector's convention. The OAuth failure
 # paths below are the only place in this app where the cause of a failure is
@@ -280,11 +281,17 @@ class MeResource:
                 description="Your account no longer exists.",
             )
 
+        allocation = compute_user_allocation(user["id"])
+
         resp.media = {
             "id": user["id"],
             "email": user["email"],
             "role": user["role"],
             "status": user["status"],
+            "quota_ram_mb": user["quota_ram_mb"],
+            "quota_cpu": user["quota_cpu"],
+            "quota_disk_gb": user["quota_disk_gb"],
+            "allocation": allocation,
         }
 
 

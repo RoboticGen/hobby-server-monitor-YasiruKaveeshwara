@@ -44,6 +44,18 @@ import SiteHeader from "../components/SiteHeader.astro";
       <h1>Server Monitor</h1>
       <p>Signed in as <strong id="user-email"></strong> (<span id="user-role"
         ></span>)</p>
+
+      <section id="quota-card" hidden>
+        <h2>Your quota</h2>
+        <dl>
+          <dt>RAM</dt>
+          <dd id="quota-ram"></dd>
+          <dt>CPU</dt>
+          <dd id="quota-cpu"></dd>
+          <dt>Disk</dt>
+          <dd id="quota-disk"></dd>
+        </dl>
+      </section>
       <!--
         Sign out lives in the header now, which is on every page. Keeping a
         second copy here would put two of the same control on one screen.
@@ -98,6 +110,14 @@ import SiteHeader from "../components/SiteHeader.astro";
         email: string;
         role: string;
         status: string;
+        quota_ram_mb: number;
+        quota_cpu: number;
+        quota_disk_gb: number;
+        allocation: {
+          ram_mb: number;
+          cpu: number;
+          disk_gb: number;
+        };
       }
 
       /**
@@ -122,6 +142,10 @@ import SiteHeader from "../components/SiteHeader.astro";
       const loading = document.getElementById("loading") as HTMLElement;
       const adminView = document.getElementById("admin-view") as HTMLElement;
       const userView = document.getElementById("user-view") as HTMLElement;
+      const quotaCard = document.getElementById("quota-card") as HTMLElement;
+      const quotaRam = document.getElementById("quota-ram") as HTMLElement;
+      const quotaCpu = document.getElementById("quota-cpu") as HTMLElement;
+      const quotaDisk = document.getElementById("quota-disk") as HTMLElement;
       const listLoading = document.getElementById(
         "containers-loading",
       ) as HTMLElement;
@@ -184,6 +208,13 @@ import SiteHeader from "../components/SiteHeader.astro";
         }
       }
 
+      function formatQuota(used: number, quota: number, unit: string): string {
+        if (quota <= 0) {
+          return `${used.toFixed(2)} ${unit} / unlimited`;
+        }
+        return `${used.toFixed(2)} / ${quota.toFixed(2)} ${unit}`;
+      }
+
       /**
        * Load and render the containers assigned to the signed-in user.
        *
@@ -233,6 +264,10 @@ import SiteHeader from "../components/SiteHeader.astro";
           me.email;
         (document.getElementById("user-role") as HTMLElement).textContent =
           me.role;
+        quotaCard.hidden = false;
+        quotaRam.textContent = formatQuota(me.allocation.ram_mb, me.quota_ram_mb, "MB");
+        quotaCpu.textContent = formatQuota(me.allocation.cpu, me.quota_cpu, "cores");
+        quotaDisk.textContent = formatQuota(me.allocation.disk_gb, me.quota_disk_gb, "GB");
 
         loading.hidden = true;
         app.hidden = false;
@@ -279,6 +314,34 @@ import SiteHeader from "../components/SiteHeader.astro";
       h2 {
         font-size: 1.1rem;
         margin: 2rem 0 0.75rem;
+      }
+
+      #quota-card {
+        margin: 1rem 0 1.5rem;
+        padding: 0.9rem 1rem;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      #quota-card h2 {
+        margin: 0 0 0.75rem;
+      }
+
+      #quota-card dl {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.2rem 0.75rem;
+        margin: 0;
+      }
+
+      #quota-card dt {
+        color: #555;
+      }
+
+      #quota-card dd {
+        margin: 0;
+        font-variant-numeric: tabular-nums;
       }
 
       #loading {
