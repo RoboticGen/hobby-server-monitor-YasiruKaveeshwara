@@ -23,6 +23,7 @@
 // places to keep in step. An .astro component scopes its own styles, and the
 // nav is mostly plain links that have no reason to wait for React to hydrate.
 import LogoutButton from "./LogoutButton";
+import StatusBanner from "./StatusBanner";
 
 interface Props {
   /**
@@ -124,6 +125,23 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
     </div>
   </div>
 </header>
+
+<!--
+  Step 23.1 — Service-degradation banner (decision 7.10).
+
+  Mounted with client:load so it begins polling GET /health immediately on
+  page load. Placed after the header's closing tag so it sits directly
+  below the nav bar. Because SiteHeader is rendered by every page in the
+  project, this single mount point gives the banner to every page without
+  per-page wiring.
+
+  Polling logic comment (required by the build guide's comment rule):
+  The banner polls GET /health every 30 seconds. That interval is
+  deliberately slower than MetricTile's 10-second poll because /health
+  probes LXD on every call (real daemon load), while /metrics/latest reads
+  a stored sample. 30s bounds how long a stale page can lie.
+-->
+<StatusBanner client:load />
 
 <script>
   import { apiFetch, ApiError } from "../lib/api";
@@ -351,5 +369,34 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
     margin: 0;
     font-size: 0.8rem;
     color: #a12;
+  }
+
+  /* Step 23.1 — StatusBanner styles.
+     The component renders a <p> with className="status-banner" plus a
+     second class of "degraded" or "unreachable". It returns null when
+     healthy, so these rules cost nothing in the normal case. */
+  :global(.status-banner) {
+    margin: 0;
+    padding: 0.6rem 1rem;
+    font-family: system-ui, sans-serif;
+    font-size: 0.9rem;
+    text-align: center;
+    font-weight: 500;
+  }
+
+  /* LXD down — stale data, mutations will 503. Amber conveys "degraded
+     but partially working", distinct from the red of "everything broken". */
+  :global(.status-banner.degraded) {
+    background: #fff3cd;
+    color: #664d03;
+    border-bottom: 1px solid #ffecb5;
+  }
+
+  /* API itself unreachable — nothing on the page is live. Red because
+     every figure the operator sees is frozen. */
+  :global(.status-banner.unreachable) {
+    background: #f8d7da;
+    color: #842029;
+    border-bottom: 1px solid #f5c2c7;
   }
 </style>

@@ -55,7 +55,10 @@ import SiteHeader from "../../components/SiteHeader.astro";
       <!-- Exclusive states, like the dashboard: the script unhides whichever
            one applies once the metadata fetch resolves. -->
       <p id="loading">Loading container…</p>
-      <p id="error" role="alert" hidden></p>
+      <div id="error" role="alert" hidden>
+        <p id="error-text"></p>
+        <button type="button" onclick="location.reload()">Retry</button>
+      </div>
 
       <div id="detail" hidden>
         <div id="tile"></div>
@@ -160,7 +163,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       function fail(message: string): void {
         loading.hidden = true;
         detail.hidden = true;
-        errorEl.textContent = message;
+        (document.getElementById("error-text") as HTMLElement).textContent = message;
         errorEl.hidden = false;
       }
 
@@ -341,6 +344,18 @@ import SiteHeader from "../../components/SiteHeader.astro";
       #error {
         color: #a12;
       }
+      #error p { margin: 0 0 0.5rem; }
+      #error button {
+        font: inherit;
+        font-size: 0.85rem;
+        padding: 0.3rem 0.9rem;
+        border: 1px solid #a12;
+        border-radius: 4px;
+        background: #fff;
+        color: #a12;
+        cursor: pointer;
+      }
+      #error button:hover { background: #fef0f0; }
 
       .windows {
         display: flex;

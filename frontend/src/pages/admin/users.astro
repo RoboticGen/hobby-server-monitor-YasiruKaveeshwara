@@ -33,7 +33,10 @@ import SiteHeader from "../../components/SiteHeader.astro";
            has to be a signed-in admin to read this endpoint at all, so they
            are always in their own results and the list can never be empty. -->
       <p id="loading">Loading users…</p>
-      <p id="error" role="alert" hidden></p>
+      <div id="error" role="alert" hidden>
+        <p id="error-text"></p>
+        <button type="button" onclick="location.reload()">Retry</button>
+      </div>
 
       <table id="users" hidden>
         <thead>
@@ -137,7 +140,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       function fail(message: string): void {
         loading.hidden = true;
         table.hidden = true;
-        errorEl.textContent = message;
+        (document.getElementById("error-text") as HTMLElement).textContent = message;
         errorEl.hidden = false;
       }
 
@@ -434,6 +437,18 @@ import SiteHeader from "../../components/SiteHeader.astro";
       #error {
         color: #a12;
       }
+      #error p { margin: 0 0 0.5rem; }
+      #error button {
+        font: inherit;
+        font-size: 0.85rem;
+        padding: 0.3rem 0.9rem;
+        border: 1px solid #a12;
+        border-radius: 4px;
+        background: #fff;
+        color: #a12;
+        cursor: pointer;
+      }
+      #error button:hover { background: #fef0f0; }
 
       table {
         width: 100%;

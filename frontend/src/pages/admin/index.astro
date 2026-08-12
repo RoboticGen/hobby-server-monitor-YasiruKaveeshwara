@@ -26,7 +26,10 @@ import SiteHeader from "../../components/SiteHeader.astro";
       <!-- Each of the four states below is exclusive; the script unhides
            exactly one once the fetch resolves. -->
       <p id="loading">Loading containers…</p>
-      <p id="error" role="alert" hidden></p>
+      <div id="error" role="alert" hidden>
+        <p id="error-text"></p>
+        <button type="button" onclick="location.reload()">Retry</button>
+      </div>
       <p id="empty" hidden>No containers yet, create one below.</p>
       <div id="tiles" class="tiles" hidden></div>
 
@@ -75,7 +78,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       /** Show a message in the error slot and hide the spinner. */
       function fail(message: string): void {
         loading.hidden = true;
-        errorEl.textContent = message;
+        (document.getElementById("error-text") as HTMLElement).textContent = message;
         errorEl.hidden = false;
       }
 
@@ -212,6 +215,23 @@ import SiteHeader from "../../components/SiteHeader.astro";
         margin: 2rem auto;
         padding: 0 1rem;
       }
+
+      /* Step 23.1 — error state with retry button. */
+      #error {
+        color: #a12;
+      }
+      #error p { margin: 0 0 0.5rem; }
+      #error button {
+        font: inherit;
+        font-size: 0.85rem;
+        padding: 0.3rem 0.9rem;
+        border: 1px solid #a12;
+        border-radius: 4px;
+        background: #fff;
+        color: #a12;
+        cursor: pointer;
+      }
+      #error button:hover { background: #fef0f0; }
 
       .tiles {
         display: grid;

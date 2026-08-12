@@ -72,7 +72,10 @@ import SiteHeader from "../components/SiteHeader.astro";
 
         <!-- Exclusive states again, one per outcome of the list fetch. -->
         <p id="containers-loading">Loading your containers…</p>
-        <p id="containers-error" role="alert" hidden></p>
+        <div id="containers-error" role="alert" hidden>
+          <p id="containers-error-text"></p>
+          <button type="button" onclick="location.reload()">Retry</button>
+        </div>
         <p id="containers-empty" hidden>
           No containers are assigned to your account yet. An administrator
           assigns containers to you; once they do, they appear here.
@@ -212,7 +215,7 @@ import SiteHeader from "../components/SiteHeader.astro";
           // Scoped to this section, not the page: the identity line above is
           // already correct and useful, so a list failure should not blank it.
           listLoading.hidden = true;
-          listError.textContent =
+          (document.getElementById("containers-error-text") as HTMLElement).textContent =
             err instanceof ApiError
               ? `Could not load your containers (${err.status}): ${err.message}`
               : "Could not reach the server to load your containers.";
@@ -288,6 +291,18 @@ import SiteHeader from "../components/SiteHeader.astro";
       #containers-error {
         color: #a12;
       }
+      #containers-error p { margin: 0 0 0.5rem; }
+      #containers-error button {
+        font: inherit;
+        font-size: 0.85rem;
+        padding: 0.3rem 0.9rem;
+        border: 1px solid #a12;
+        border-radius: 4px;
+        background: #fff;
+        color: #a12;
+        cursor: pointer;
+      }
+      #containers-error button:hover { background: #fef0f0; }
 
       #containers-empty {
         color: #555;
