@@ -1,14 +1,7 @@
 ---
 // Admin dashboard: every container on the host, each with a live metric tile.
-//
-// WHY THE CONTAINER FETCH IS CLIENT-SIDE, NOT IN THIS FRONTMATTER:
-// Same reason as index.astro. The build guide describes fetching
-// GET /api/containers here at render time, but frontmatter runs at BUILD
-// time under Astro's static output (decision 7.12 — Falcon serves the built
-// files, there is no Node server in production). At build time there is no
-// session cookie, so the call would 401 and bake a permanent error into the
-// HTML. The fetch therefore runs in the browser, where the cookie exists.
 import SiteHeader from "../../components/SiteHeader.astro";
+import "../../styles/global.css";
 ---
 
 <html lang="en">
@@ -21,23 +14,62 @@ import SiteHeader from "../../components/SiteHeader.astro";
     <SiteHeader />
 
     <main>
-      <h1>Containers</h1>
+      <div class="page-title-row">
+        <div>
+          <h1>Host Infrastructure & Containers</h1>
+          <p class="subtitle">Live telemetry, capacity accounting, and container management.</p>
+        </div>
+      </div>
 
       <div id="accounting-mount"></div>
 
-      <!-- Each of the four states below is exclusive; the script unhides
-           exactly one once the fetch resolves. -->
-      <p id="loading">Loading containers…</p>
-      <div id="error" role="alert" hidden>
-        <p id="error-text"></p>
-        <button type="button" onclick="location.reload()">Retry</button>
-      </div>
-      <p id="empty" hidden>No containers yet, create one below.</p>
-      <div id="tiles" class="tiles" hidden></div>
+      <div class="containers-section">
+        <div class="section-header">
+          <h2>Container Fleet</h2>
+        </div>
 
-      <!-- Sits after the list because the empty state above points "below" to
-           it. Hidden until the caller is confirmed to be an admin, so a
-           non-admin never sees a create control the API would refuse. -->
+        <div id="loading" class="skeleton-grid">
+          {
+            [1, 2, 3].map(() => (
+              <div class="skeleton-tile-card">
+                <div class="skeleton-header-row">
+                  <div class="skeleton-shimmer skeleton-title-box" />
+                  <div class="skeleton-shimmer skeleton-badge-box" />
+                </div>
+                <div class="skeleton-meter-group">
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 40%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 55%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 50%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                </div>
+                <div class="skeleton-shimmer skeleton-footer-box" />
+              </div>
+            ))
+          }
+        </div>
+
+        <div id="error" class="alert alert-error" role="alert" hidden>
+          <p id="error-text"></p>
+          <button type="button" class="btn" onclick="location.reload()">Retry Connection</button>
+        </div>
+
+        <div id="empty" class="empty-state glass-card" hidden>
+          <div class="empty-icon">📦</div>
+          <h3>No Active Containers</h3>
+          <p>There are currently no LXD containers deployed on this host. Provision one below.</p>
+        </div>
+
+        <div id="tiles" class="tiles-grid" hidden></div>
+      </div>
+
       <div id="form-mount" hidden></div>
     </main>
 
@@ -45,14 +77,11 @@ import SiteHeader from "../../components/SiteHeader.astro";
       import { createElement } from "react";
       import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
+      import { syncSession } from "../../lib/session";
       import AccountingOverview from "../../components/AccountingOverview";
       import MetricTile from "../../components/MetricTile";
       import CreateContainerForm from "../../components/CreateContainerForm";
 
-      /**
-       * A container as returned by GET /api/containers: the DB row plus the
-       * live LXD fields that _enrich_with_lxd_state() merges in.
-       */
       interface ContainerRecord {
         id: string;
         lxd_name: string;
@@ -71,7 +100,6 @@ import SiteHeader from "../../components/SiteHeader.astro";
         containers: ContainerRecord[];
       }
 
-      /** Subset of GET /api/auth/me this page needs. */
       interface MeResponse {
         role: string;
       }
@@ -83,52 +111,41 @@ import SiteHeader from "../../components/SiteHeader.astro";
       const formMount = document.getElementById("form-mount") as HTMLElement;
       const accountingMount = document.getElementById("accounting-mount") as HTMLElement;
 
-      /** Show a message in the error slot and hide the spinner. */
       function fail(message: string): void {
         loading.hidden = true;
         (document.getElementById("error-text") as HTMLElement).textContent = message;
         errorEl.hidden = false;
       }
 
-      /**
-       * Draw one MetricTile island per container into the grid.
-       *
-       * Replaces the grid's contents rather than appending, so calling this
-       * again after a create does not duplicate every existing tile.
-       * Mounting is imperative because the list is only known at runtime —
-       * Astro's `client:` directives resolve at build time, when the
-       * container set does not exist yet.
-       *
-       * Each tile gets a link to that container's detail page (history and
-       * terminal). The link is a sibling of the tile, not a wrapper around it:
-       * the tile refreshes itself every 10 seconds and carries its own status
-       * text, and a live region inside a link makes for a link whose
-       * accessible name keeps changing under the reader.
-       */
       function renderTiles(containers: ContainerRecord[]): void {
         tiles.replaceChildren();
 
         for (const container of containers) {
           const cell = document.createElement("div");
-          cell.className = "cell";
+          cell.className = "tile-cell glass-card";
 
           const mount = document.createElement("div");
 
+          const footer = document.createElement("div");
+          footer.className = "tile-footer";
+
           const link = document.createElement("a");
-          // Query string rather than a path segment because the detail route is
-          // a single static shell — see the comment at the top of
-          // pages/containers/[id].astro for why static output forces that.
           link.href = `/containers/view/?container=${encodeURIComponent(container.id)}`;
-          link.className = "detail-link";
-          link.textContent = "History and terminal →";
-          // The visible text repeats across every card, so the accessible name
-          // says which container it belongs to.
+          link.className = "detail-action-link";
+          link.innerHTML = `
+            <span>Console & Telemetry</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M5 12h14"></path>
+              <path d="m12 5 7 7-7 7"></path>
+            </svg>
+          `;
           link.setAttribute(
             "aria-label",
             `History and terminal for ${container.lxd_name}`,
           );
 
-          cell.append(mount, link);
+          footer.appendChild(link);
+          cell.append(mount, footer);
           tiles.appendChild(cell);
 
           createRoot(mount).render(
@@ -147,378 +164,503 @@ import SiteHeader from "../../components/SiteHeader.astro";
         }
       }
 
-      /**
-       * Re-fetch the container list and repaint the page.
-       *
-       * Passed to the form as its onCreated callback: a new container has to
-       * come from the server, since only the backend knows the id and the
-       * live LXD status the tile needs.
-       */
       async function refreshContainers(): Promise<void> {
         try {
           const list =
             await apiFetch<ContainerListResponse>("/api/containers");
 
-          // The empty state and the grid swap places as containers appear,
-          // so both are set explicitly rather than assuming the prior state.
           empty.hidden = list.containers.length > 0;
           tiles.hidden = list.containers.length === 0;
           renderTiles(list.containers);
         } catch {
-          // The container was still created — only the refresh failed. The
-          // form has already reported its own success, so overwriting the
-          // page with an error here would contradict it.
+          // Keep existing list on refresh failure
         }
       }
 
-      try {
-        // Both calls are independent, so they run concurrently rather than
-        // making the page wait for two sequential round trips.
-        const [me, list] = await Promise.all([
-          apiFetch<MeResponse>("/api/auth/me"),
-          apiFetch<ContainerListResponse>("/api/containers"),
-        ]);
+      let initialized = false;
 
-        if (me.role !== "admin") {
-          // The backend already scopes GET /api/containers to what the caller
-          // may see, so this is not a security control — it is honesty about
-          // the page. Without it a regular user would land on a page titled
-          // "Admin" showing only their own containers, implying the host has
-          // just those. Their real view is the scoped dashboard.
-          fail("This page is for administrators. Return to the dashboard.");
-        } else {
+      async function loadFleet(): Promise<void> {
+        try {
+          const list = await apiFetch<ContainerListResponse>("/api/containers");
           loading.hidden = true;
 
-          createRoot(accountingMount).render(createElement(AccountingOverview));
+          if (!initialized) {
+            initialized = true;
+            createRoot(accountingMount).render(createElement(AccountingOverview));
+
+            formMount.hidden = false;
+            createRoot(formMount).render(
+              createElement(CreateContainerForm, {
+                onCreated: refreshContainers,
+              }),
+            );
+          }
 
           if (list.containers.length === 0) {
-            // Explicit empty state: a bare page with no tiles is ambiguous —
-            // it reads as "still loading" or "something broke" rather than
-            // "there is genuinely nothing here yet".
             empty.hidden = false;
+            tiles.hidden = true;
           } else {
+            empty.hidden = true;
             tiles.hidden = false;
             renderTiles(list.containers);
           }
-
-          formMount.hidden = false;
-          createRoot(formMount).render(
-            createElement(CreateContainerForm, {
-              onCreated: refreshContainers,
-            }),
-          );
-        }
-      } catch (err) {
-        // 401 means no session, so send the user to sign in. Anything else is
-        // surfaced rather than redirected: bouncing to /login on a 500 or a
-        // dead backend would hide the real fault behind a login screen.
-        if (err instanceof ApiError && err.status === 401) {
-          window.location.replace("/login");
-        } else if (err instanceof ApiError) {
-          fail(`Could not load containers (${err.status}): ${err.message}`);
-        } else {
-          fail("Could not reach the server to load containers.");
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            window.location.replace("/login");
+          } else if (err instanceof ApiError) {
+            fail(`Could not load containers (${err.status}): ${err.message}`);
+          } else {
+            fail("Could not reach the server to load containers.");
+          }
         }
       }
+
+      void syncSession({
+        onSuccess(user) {
+          if (user.role !== "admin") {
+            fail("This page is for administrators. Return to the dashboard.");
+            return;
+          }
+          void loadFleet();
+        },
+        onUnauthorized() {
+          window.location.replace("/login");
+        },
+        onError(err) {
+          fail("Could not reach the server to load session.");
+        },
+      });
     </script>
 
     <style>
-      main {
-        font-family: system-ui, sans-serif;
-        max-width: 60rem;
-        margin: 2rem auto;
-        padding: 0 1rem;
+      .page-title-row {
+        margin-bottom: 2rem;
       }
 
-      /* Step 23.1 — error state with retry button. */
-      #error {
-        color: #a12;
-      }
-      #error p { margin: 0 0 0.5rem; }
-      #error button {
-        font: inherit;
-        font-size: 0.85rem;
-        padding: 0.3rem 0.9rem;
-        border: 1px solid #a12;
-        border-radius: 4px;
-        background: #fff;
-        color: #a12;
-        cursor: pointer;
-      }
-      #error button:hover { background: #fef0f0; }
-
-      .tiles {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
-        gap: 1rem;
-      }
-
-      :global(.accounting-panel) {
-        margin: 1.5rem 0 2rem;
-        padding: 1rem 1.1rem;
-        border: 1px solid #d0d0d0;
-        border-radius: 8px;
-        background: #fcfcfc;
-      }
-
-      :global(.accounting-panel .panel-heading) {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 0.75rem;
-      }
-
-      :global(.accounting-panel h2) {
-        margin: 0;
-        font-size: 1.1rem;
-      }
-
-      :global(.accounting-panel h3) {
-        margin: 0 0 0.75rem;
+      .subtitle {
+        color: var(--text-secondary);
         font-size: 0.95rem;
+        margin-top: -1rem;
       }
 
-      :global(.accounting-panel .stale) {
-        font-size: 0.8rem;
-        padding: 0.2rem 0.5rem;
-        border-radius: 999px;
-        background: #fff4d8;
-        color: #8a5a00;
+      .containers-section {
+        margin: 2.5rem 0;
       }
 
-      :global(.accounting-panel .hint) {
-        margin: 0.5rem 0 0;
-        font-size: 0.8rem;
-        color: #555;
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1.25rem;
       }
 
-      :global(.accounting-panel .summary-grid) {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-        gap: 1rem;
-        margin-top: 1rem;
-      }
-
-      :global(.accounting-panel .summary-card) {
-        padding: 0.85rem 0.95rem;
-        border: 1px solid #e0e0e0;
-        border-radius: 6px;
-        background: #fff;
-      }
-
-      :global(.accounting-panel dl) {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 0.2rem 0.75rem;
+      .section-header h2 {
         margin: 0;
       }
 
-      :global(.accounting-panel dt) {
-        color: #555;
+      .loading-state,
+      .empty-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        padding: 3rem 2rem;
+        text-align: center;
       }
 
-      :global(.accounting-panel dd) {
+      .empty-state {
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .empty-icon {
+        font-size: 2.5rem;
+        margin-bottom: 0.5rem;
+        opacity: 0.8;
+      }
+
+      .empty-state h3 {
         margin: 0;
-        font-variant-numeric: tabular-nums;
+        color: var(--text-primary);
       }
 
-      :global(.accounting-panel .table-wrap) {
-        overflow-x: auto;
-        margin-top: 1rem;
+      .empty-state p {
+        color: var(--text-muted);
+        max-width: 24rem;
+        margin: 0;
       }
 
-      :global(.accounting-panel table) {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.9rem;
+      .tiles-grid[hidden] {
+        display: none !important;
       }
 
-      :global(.accounting-panel th),
-      :global(.accounting-panel td) {
-        text-align: left;
-        padding: 0.45rem 0.55rem;
-        border-bottom: 1px solid #e0e0e0;
+      .tile-cell {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 1.25rem;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
+        transition: all var(--transition-normal);
       }
 
-      :global(.accounting-panel th) {
-        font-size: 0.8rem;
-        color: #555;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
+      .tile-cell:hover {
+        border-color: var(--border-medium);
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-md);
       }
 
-      :global(.accounting-panel td.warn) {
-        color: #8a5a00;
+      .tile-footer {
+        margin-top: 1.25rem;
+        padding-top: 0.85rem;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      .detail-action-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.825rem;
         font-weight: 600;
+        color: var(--accent-cyan);
+        text-decoration: none;
+        transition: all var(--transition-fast);
       }
 
-      :global(.accounting-panel tr[data-status="revoked"] td),
-      :global(.accounting-panel tr[data-status="invited"] td) {
-        color: #777;
+      .detail-action-link:hover {
+        color: var(--accent-cyan-light);
+        gap: 0.6rem;
       }
 
-      /* `hidden` alone does not hide a grid: an author `display` value outranks
-         the UA stylesheet's [hidden] { display: none }, so the empty grid would
-         still occupy layout. Harmless while the grid is empty — which is the
-         only time it is hidden — but wrong the moment that stops being true.
-         Written as .tiles[hidden] rather than a bare [hidden] because Astro
-         leaves a lone attribute selector unscoped and emits it globally. */
-      .tiles[hidden] {
-        display: none;
+      /* Global Component Support Styles */
+      :global(.metric-tile) {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
       }
 
-      /* Each cell stacks its tile and the tile's detail link, so the links line
-         up along the bottom of the row instead of floating mid-card. */
-      .cell {
+      :global(.tile-header) {
         display: flex;
         flex-direction: column;
         gap: 0.4rem;
       }
 
-      .detail-link {
-        font-size: 0.85rem;
-        color: #06c;
+      :global(.title-area) {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
       }
 
-      .detail-link:focus-visible {
-        outline: 3px solid #0b3d91;
-        outline-offset: 2px;
+      :global(.tile-title) {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        word-break: break-word;
       }
 
-      /* Tile internals are styled here rather than in MetricTile.tsx because
-         the component renders plain semantic markup and carries no styles of
-         its own, so each page controls how its tiles look. */
-      :global(.tile) {
-        border: 1px solid #d0d0d0;
-        border-radius: 6px;
-        padding: 0.75rem 1rem;
-        /* Fills its cell so neighbouring tiles in a row match height even when
-           one of them is showing an extra status line. */
-        height: 100%;
-        box-sizing: border-box;
+      :global(.tile-meta) {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.775rem;
+        color: var(--text-muted);
       }
 
-      :global(.tile header) {
+      :global(.ip-text) {
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+      }
+
+      :global(.meta-separator) {
+        color: var(--border-medium);
+      }
+
+      :global(.tile-error-banner) {
+        padding: 0.4rem 0.6rem;
+        background: rgba(245, 158, 11, 0.1);
+        border: 1px solid rgba(245, 158, 11, 0.25);
+        border-radius: var(--radius-xs);
+        font-size: 0.75rem;
+        color: #fde68a;
+      }
+
+      :global(.metrics-grid) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      :global(.metric-row) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+      }
+
+      :global(.metric-label-group) {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        font-size: 0.775rem;
+      }
+
+      :global(.metric-name) {
+        font-weight: 600;
+        color: var(--text-secondary);
+        letter-spacing: 0.04em;
+      }
+
+      :global(.metric-val) {
+        font-size: 0.8rem;
+        color: var(--text-primary);
+      }
+
+      :global(.metric-total) {
+        color: var(--text-muted);
+      }
+
+      :global(.metric-pct) {
+        color: var(--accent-cyan);
+      }
+
+      :global(.network-row) {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem;
+        padding-top: 0.5rem;
+        border-top: 1px dashed var(--border-subtle);
+        margin-top: 0.25rem;
+      }
+
+      :global(.net-stat) {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.75rem;
+      }
+
+      :global(.net-icon.rx) { color: #10b981; font-weight: 700; }
+      :global(.net-icon.tx) { color: #38bdf8; font-weight: 700; }
+      :global(.net-rate) { color: var(--text-primary); }
+      :global(.net-total) { color: var(--text-muted); font-size: 0.7rem; }
+
+      /* Accounting Panel Styles */
+      :global(.accounting-panel) {
+        margin-bottom: 2rem;
+      }
+
+      :global(.heading-title-group) {
+        display: flex;
+        align-items: baseline;
+        gap: 0.75rem;
+      }
+
+      :global(.containers-badge) {
+        padding: 0.2rem 0.6rem;
+        background: rgba(6, 182, 212, 0.1);
+        border: 1px solid rgba(6, 182, 212, 0.3);
+        border-radius: var(--radius-full);
+        font-size: 0.75rem;
+        color: var(--accent-cyan-light);
+        font-weight: 600;
+      }
+
+      :global(.capacity-grid) {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+        gap: 1.25rem;
+        margin-top: 1.25rem;
+      }
+
+      :global(.stat-box) {
+        padding: 1rem 1.15rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+      }
+
+      :global(.stat-header) {
         display: flex;
         justify-content: space-between;
         align-items: baseline;
-        gap: 0.5rem;
+        font-size: 0.75rem;
+        margin-bottom: 0.4rem;
       }
 
-      :global(.tile h3) {
-        margin: 0;
-        font-size: 1rem;
-        overflow-wrap: anywhere;
-      }
-
-      :global(.tile .state) {
-        font-size: 0.8rem;
-        color: #555;
-      }
-
-      :global(.tile .meta) {
-        margin: 0.35rem 0 0;
-        font-size: 0.78rem;
-        color: #666;
-        overflow-wrap: anywhere;
-      }
-
-      :global(.tile dl) {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 0.15rem 0.75rem;
-        margin: 0.75rem 0 0;
-        font-size: 0.9rem;
-      }
-
-      :global(.tile dt) {
-        color: #555;
-      }
-
-      :global(.tile dd) {
-        margin: 0;
-        font-variant-numeric: tabular-nums;
-      }
-
-      :global(.tile .error) {
-        color: #a12; /* Warning stays readable against the tile background. */
-        font-size: 0.85rem;
-      }
-
-      /* Form internals are styled here for the same reason as the tile:
-         CreateContainerForm renders plain semantic markup and no styles. */
-      :global(.create-form) {
-        display: grid;
-        gap: 0.35rem;
-        margin-top: 2.5rem;
-        padding-top: 1.5rem;
-        border-top: 1px solid #d0d0d0;
-        max-width: 28rem;
-      }
-
-      :global(.create-form h2) {
-        margin: 0 0 0.5rem;
-        font-size: 1.1rem;
-      }
-
-      :global(.create-form label) {
-        font-size: 0.9rem;
+      :global(.stat-label) {
+        color: var(--text-secondary);
         font-weight: 600;
-        margin-top: 0.5rem;
+        letter-spacing: 0.04em;
       }
 
-      :global(.create-form input) {
-        font: inherit;
-        padding: 0.35rem 0.5rem;
+      :global(.stat-pct) {
+        color: var(--accent-cyan);
+        font-weight: 600;
       }
 
-      :global(.create-form select) {
-        font: inherit;
-        padding: 0.35rem 0.25rem;
+      :global(.stat-values) {
+        display: flex;
+        align-items: baseline;
+        gap: 0.35rem;
+        margin-bottom: 0.5rem;
       }
 
-      /* Checkbox rows read as one control: the box sits inline with its text
-         rather than stacking like the labelled fields above. */
-      :global(.create-form .toggle) {
+      :global(.stat-main) {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+
+      :global(.stat-sub) {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+      }
+
+      /* Creation Form Styles */
+      :global(.create-container-section) {
+        margin-top: 3rem;
+      }
+
+      :global(.form-header) {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
-        font-weight: 400;
+        gap: 1rem;
+        margin-bottom: 1.75rem;
       }
 
-      :global(.create-form .toggle input) {
-        width: auto;
+      :global(.header-icon) {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: var(--radius-sm);
+        background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(59, 130, 246, 0.1));
+        border: 1px solid var(--border-accent);
+        color: var(--accent-cyan-light);
+      }
+
+      :global(.form-header h2) {
         margin: 0;
       }
 
-      /* Range inputs ignore padding and stretch oddly with it. */
-      :global(.create-form input[type="range"]) {
-        padding: 0;
+      :global(.section-desc) {
+        margin: 0.2rem 0 0;
+        font-size: 0.875rem;
+        color: var(--text-muted);
       }
 
-      :global(.create-form button) {
-        font: inherit;
-        margin-top: 1rem;
-        padding: 0.5rem 1rem;
+      :global(.form-grid) {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+        gap: 1.25rem;
+      }
+
+      :global(.form-group) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      :global(.form-group label) {
+        font-size: 0.825rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+      }
+
+      :global(.field-hint) {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+
+      :global(.sliders-panel) {
+        margin: 1.5rem 0;
+        padding: 1.25rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+      }
+
+      :global(.sliders-panel h3) {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        font-size: 0.95rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      :global(.slider-box) {
+        margin-bottom: 1.25rem;
+      }
+
+      :global(.slider-box:last-child) {
+        margin-bottom: 0;
+      }
+
+      :global(.slider-header) {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 0.85rem;
+        font-weight: 500;
+      }
+
+      :global(.slider-value) {
+        color: var(--accent-cyan);
+        font-weight: 700;
+      }
+
+      :global(.slider-footer) {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+
+      :global(.advanced-grid) {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.25rem;
+        margin: 1.25rem 0;
+      }
+
+      :global(.toggles-row) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        margin: 1.25rem 0;
+      }
+
+      :global(.toggle-label) {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        cursor: pointer;
+        user-select: none;
+      }
+
+      :global(.toggle-label input[type="checkbox"]) {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent-cyan);
         cursor: pointer;
       }
 
-      :global(.create-form .hint) {
-        margin: 0;
-        font-size: 0.8rem;
-        color: #555;
+      :global(.form-actions) {
+        margin-top: 1.5rem;
       }
 
-      :global(.create-form .error) {
-        margin: 0.5rem 0 0;
-        color: #a12;
-        font-size: 0.9rem;
-      }
-
-      :global(.create-form .success) {
-        margin: 0.5rem 0 0;
-        color: #161;
-        font-size: 0.9rem;
+      @media (max-width: 640px) {
+        .advanced-grid {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </body>

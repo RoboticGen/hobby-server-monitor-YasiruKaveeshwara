@@ -8,7 +8,6 @@
 import { useEffect, useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
 
-/** `host` block of GET /api/accounting. Null when LXD is unreachable. */
 interface HostResources {
 	cpu_cores: number;
 	ram_total_mb: number;
@@ -17,7 +16,6 @@ interface HostResources {
 	disk_used_gb: number;
 }
 
-/** `allocated` block of GET /api/accounting — summed from SQLite, so always current. */
 interface AllocatedTotals {
 	ram_mb: number;
 	cpu: number;
@@ -47,7 +45,6 @@ interface UserAccountingRow {
 	container_count: number;
 }
 
-/** Response body of GET /api/accounting (backend/resources/accounting.py). */
 interface AccountingResponse {
 	host: HostResources | null;
 	allocated: AllocatedTotals;
@@ -56,7 +53,6 @@ interface AccountingResponse {
 	host_error: string | null;
 }
 
-/** Response body of POST /api/containers on success (201). */
 interface CreatedContainer {
 	id: string;
 	name: string;
@@ -64,7 +60,6 @@ interface CreatedContainer {
 	limits: { ram_mb: number; cpu: number; disk_gb: number };
 }
 
-/** Response body of GET /api/lxd/options (backend/resources/containers.py). */
 interface LxdOptionsResponse {
 	images: { alias: string; description: string }[];
 	networks: { name: string; type: string; managed: boolean }[];
@@ -75,12 +70,10 @@ interface LxdOptionsResponse {
 		used_gb: number;
 		available_gb: number;
 	}[];
-	/** True when the lists are empty because LXD could not be reached. */
 	stale: boolean;
 	lxd_error: string | null;
 }
 
-/** Upper bounds the sliders allow, derived from capacity minus allocation. */
 interface Headroom {
 	ramMb: number;
 	cpu: number;
@@ -88,52 +81,14 @@ interface Headroom {
 }
 
 export interface CreateContainerFormProps {
-	/**
-	 * Called after a container is created successfully, so the dashboard can
-	 * pull a fresh container list. Optional because the form is useful (and
-	 * testable) without a parent that cares.
-	 */
 	onCreated?: () => void;
 }
 
-/**
- * Ceilings used ONLY when LXD is unreachable and real capacity is unknown.
- *
- * These are not "the limits" — they exist so the form stays usable during an
- * LXD outage instead of collapsing to a max of zero. The server re-validates
- * every limit against live capacity on submit (decision: server is the source
- * of truth), so a value accepted here can still be refused there, and that
- * refusal is what the admin sees.
- */
 const FALLBACK_MAX_RAM_MB = 4096;
 const FALLBACK_MAX_CPU = 8;
 const FALLBACK_MAX_DISK_GB = 100;
 const RAM_STEP_MB = 256;
 
-/** Slider granularity. RAM in 256MB steps keeps the control usable at 64GB. */
-
-/**
- * When LXD reports cached images, the form only allows choosing from that
- * discovered list. This makes the image selection strict and avoids guesses.
- */
-
-/**
- * Compute how much of the host is still unallocated.
- *
- * WHY THE BOUNDS COME FROM A LIVE BACKEND CALL AND NOT A HARDCODED CONSTANT:
- * a constant would be a second, silently diverging copy of the truth. The
- * host's real capacity is whatever LXD reports on this machine right now, and
- * the amount already promised to containers changes every time anyone creates
- * or deletes one. A hardcoded max would either sit below real capacity —
- * making the form refuse containers the host could actually run — or above
- * it, letting an admin drag a slider to a number the server is guaranteed to
- * reject. Deriving the ceiling from capacity minus allocation means the
- * control can only offer what is genuinely available.
- *
- * Note this subtracts *allocated* rather than *used*: a stopped container
- * with a 2GB limit still holds that 2GB against the host, so allocation is
- * the figure that decides whether a new container fits.
- */
 function computeHostHeadroom(accounting: AccountingResponse | null): Headroom {
 	if (!accounting?.host) {
 		return {
@@ -182,56 +137,37 @@ function computeEffectiveHeadroom(
 	};
 }
 
-/** Format an MB figure as GB for display once it passes 1024MB. */
 function formatRam(mb: number): string {
 	return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
 }
 
 export default function CreateContainerForm({ onCreated }: CreateContainerFormProps) {
-	// --- Form fields ---
 	const [name, setName] = useState<string>("");
 	const [image, setImage] = useState<string>("");
 	const [assigneeId, setAssigneeId] = useState<string>("");
 	const [ramMb, setRamMb] = useState<number>(512);
 	const [cpu, setCpu] = useState<number>(1);
 	const [diskGb, setDiskGb] = useState<number>(10);
-	// Placement and lifecycle options. Defaults match the backend's: blank
-	// placement inherits the default profile, and both toggles are off.
 	const [network, setNetwork] = useState<string>("");
 	const [storagePool, setStoragePool] = useState<string>("");
 	const [ephemeral, setEphemeral] = useState<boolean>(false);
 	const [autostart, setAutostart] = useState<boolean>(false);
 	const [description, setDescription] = useState<string>("");
 
-	// --- Request lifecycle ---
 	const [accounting, setAccounting] = useState<AccountingResponse | null>(null);
 	const [options, setOptions] = useState<LxdOptionsResponse | null>(null);
 	const [submitting, setSubmitting] = useState<boolean>(false);
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState<string | null>(null);
-
-	// Show LXD error messages returned by GET /api/lxd/options so admins
-	// understand why the image list might be empty on this host.
-	const lxdError = options?.lxd_error ?? null;
+	const [reloadKey, setReloadKey] = useState<number>(0);
 
 	const hostHeadroom = computeHostHeadroom(accounting);
 	const selectedAssignee = accounting?.users.find((user) => user.id === assigneeId) ?? null;
-	const selectedQuota = selectedAssignee ? computeRemainingQuota(selectedAssignee) : null;
 	const selectedStoragePool = options?.storage_pools.find((pool) => pool.name === storagePool) ?? null;
 	const selectedPoolDiskGb = selectedStoragePool?.available_gb ?? hostHeadroom.diskGb;
 	const effectiveHeadroom = computeEffectiveHeadroom(accounting, assigneeId, hostHeadroom, selectedPoolDiskGb);
 	const canCreate =
 		effectiveHeadroom.ramMb >= RAM_STEP_MB && effectiveHeadroom.cpu >= 1 && effectiveHeadroom.diskGb >= 1;
-
-	/**
-	 * Load host capacity once on mount, and again after each create.
-	 *
-	 * `reloadKey` is bumped by a successful submit rather than the accounting
-	 * response being patched by hand: the backend is the only thing that knows
-	 * the new allocation totals, so re-asking it is both simpler and correct,
-	 * where local arithmetic would drift from the server's view.
-	 */
-	const [reloadKey, setReloadKey] = useState<number>(0);
 
 	useEffect(() => {
 		if (ramMb > effectiveHeadroom.ramMb) {
@@ -248,7 +184,6 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 	}, [effectiveHeadroom, ramMb, cpu, diskGb]);
 
 	useEffect(() => {
-		// Guards a late response from writing state into an unmounted form.
 		let cancelled = false;
 
 		async function loadCapacity(): Promise<void> {
@@ -256,10 +191,6 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 				const data = await apiFetch<AccountingResponse>("/api/accounting");
 				if (!cancelled) setAccounting(data);
 			} catch {
-				// Swallowed deliberately. Failing to read capacity must not block
-				// creation: the form falls back to the ceilings above and the server
-				// still enforces the real limits. Surfacing this as a form error
-				// would imply the admin did something wrong.
 				if (!cancelled) setAccounting(null);
 			}
 		}
@@ -270,14 +201,6 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 		};
 	}, [reloadKey]);
 
-	/**
-	 * Load the host's images, networks, and storage pools once on mount.
-	 *
-	 * Separate from the capacity effect and NOT keyed on `reloadKey`: pools
-	 * and networks are host configuration that creating a container does not
-	 * change, so re-fetching them after every create would be a round trip
-	 * that can only return the same answer.
-	 */
 	useEffect(() => {
 		let cancelled = false;
 
@@ -286,10 +209,6 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 				const data = await apiFetch<LxdOptionsResponse>("/api/lxd/options");
 				if (!cancelled) setOptions(data);
 			} catch {
-				// Same reasoning as capacity: these lists only populate
-				// dropdowns, and every field they feed has a valid blank
-				// default, so a failure here degrades the form rather than
-				// breaking it.
 				if (!cancelled) setOptions(null);
 			}
 		}
@@ -300,319 +219,285 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 		};
 	}, []);
 
-	/**
-	 * Submit the form.
-	 *
-	 * Client-side validation is limited to "is there a name at all". The LXD
-	 * naming rules are not re-implemented here: the backend owns that regex and
-	 * returns the exact rule as prose, so duplicating it would create a second
-	 * copy to keep in sync and risk rejecting names the server would accept.
-	 */
-	async function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
+	async function handleSubmit(event: SyntheticEvent<HTMLFormElement>): Promise<void> {
 		event.preventDefault();
 		setSubmitting(true);
 		setError(null);
 		setSuccess(null);
 
+		const body: Record<string, unknown> = {
+			name: name.trim(),
+			image: image.trim(),
+			limits: {
+				ram_mb: ramMb,
+				cpu,
+				disk_gb: diskGb,
+			},
+		};
+
+		if (assigneeId) body.assign_to = assigneeId;
+		if (network) body.network = network;
+		if (storagePool) body.storage_pool = storagePool;
+		if (ephemeral) body.ephemeral = true;
+		if (autostart) body.autostart = true;
+		if (description.trim()) body.description = description.trim();
+
 		try {
 			const created = await apiFetch<CreatedContainer>("/api/containers", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					name,
-					image,
-					limits: { ram_mb: ramMb, cpu, disk_gb: diskGb },
-					assign_to: assigneeId || undefined,
-					// Sent unconditionally, including when blank or false: the
-					// backend treats "" as "inherit the default profile" and
-					// false as off, so these are the explicit form of the
-					// defaults rather than a request to change anything.
-					network,
-					storage_pool: storagePool,
-					ephemeral,
-					autostart,
-					description,
-				}),
+				body: JSON.stringify(body),
 			});
 
-			setSuccess(`Created ${created.name} (${created.image}).`);
-			// Name and description are cleared because they are unique to the
-			// container just made; the limits and placement stay put, since
-			// creating a batch of similar containers is the common case.
+			setSuccess(`Container '${created.name}' initialized and created successfully.`);
 			setName("");
 			setDescription("");
 			setReloadKey((key) => key + 1);
 			onCreated?.();
 		} catch (err) {
-			// The server's own message is shown verbatim — its validation text
-			// names the actual rule that was broken (the container-name regex, a
-			// quota ceiling, a duplicate name), which a generic "something went
-			// wrong" would throw away.
-			setError(err instanceof ApiError ? err.message : "Could not reach the server to create the container.");
+			setError(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
 		} finally {
 			setSubmitting(false);
 		}
 	}
 
 	return (
-		<form className='create-form' onSubmit={handleSubmit}>
-			<h2>Create container</h2>
+		<section className='create-container-section glass-card'>
+			<div className='form-header'>
+				<div className='header-icon'>
+					<svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2'>
+						<line x1='12' y1='5' x2='12' y2='19'></line>
+						<line x1='5' y1='12' x2='19' y2='12'></line>
+					</svg>
+				</div>
+				<div>
+					<h2>Create New Container</h2>
+					<p className='section-desc'>Deploy an isolated unprivileged LXD container with resource limits.</p>
+				</div>
+			</div>
 
-			{/* Says plainly that the ceilings below are guesses, so an admin does
-          not read a fallback maximum as real host capacity. */}
-			{accounting === null && (
-				<p className='hint' role='status'>
-					Host capacity unavailable, showing default limits. The server still enforces the real ones.
-				</p>
-			)}
-			{accounting?.stale && (
-				<p className='hint' role='status'>
-					LXD is unreachable, so host capacity is unknown. Allocation figures are still accurate.
-				</p>
-			)}
+			{error && <div className='alert alert-error'>{error}</div>}
+			{success && <div className='alert alert-success'>{success}</div>}
 
-			<label htmlFor='container-name'>Name</label>
-			<input
-				id='container-name'
-				name='name'
-				value={name}
-				required
-				onChange={(event) => setName(event.target.value)}
-				placeholder='web-server-01'
-			/>
-			{/* A hint, not a validator: the server owns the rule and its rejection
-          message is what the admin ultimately sees. */}
-			<p className='hint'>Lowercase letters, digits and hyphens. Must start with a letter.</p>
-
-			<label htmlFor='container-image'>Image</label>
-			{/* When cached images are available, the form only lets the admin choose from that runtime-discovered list. This prevents free-form guesses. */}
-			{options && options.images && options.images.length > 0 ?
-				<select
-					id='container-image-select'
-					name='image'
-					value={image}
-					required
-					onChange={(event) => setImage(event.target.value)}>
-					<option value=''>Choose an image…</option>
-					{options.images.map((entry) => (
-						<option key={entry.alias} value={entry.alias}>
-							{entry.alias}
-							{entry.description ? ` — ${entry.description}` : ""}
-						</option>
-					))}
-				</select>
-			:	<>
-					<select id='container-image-select' name='image' disabled>
-						<option value=''>No cached images available</option>
-					</select>
-					{options?.stale && (
-						<p className='hint' role='status'>
-							Cannot confirm host images because LXD is unreachable. Please retry when LXD is available.
-						</p>
-					)}
-					{options === null && (
-						<p className='hint' role='status'>
-							Image discovery failed. Refresh to try again.
-						</p>
-					)}
-				</>
-			}
-			{accounting?.users && accounting.users.length > 0 && (
-				<>
-					<label htmlFor='container-assignee'>Assign to user</label>
-					<select
-						id='container-assignee'
-						name='assign_to'
-						value={assigneeId}
-						onChange={(event) => setAssigneeId(event.target.value)}>
-						<option value=''>No pre-assignment</option>
-						{accounting.users.map((user) => (
-							<option key={user.id} value={user.id}>
-								{user.email} ({user.allocation.ram_mb}/{user.quota.ram_mb} MB, {user.allocation.cpu}/{user.quota.cpu}{" "}
-								cores, {user.allocation.disk_gb}/{user.quota.disk_gb} GB)
-							</option>
-						))}
-					</select>
-					{selectedQuota && (
-						<p className='hint'>
-							Selected user remaining quota: {formatRam(selectedQuota.ramMb)} RAM, {selectedQuota.cpu.toFixed(1)} CPU,{" "}
-							{selectedQuota.diskGb} GB disk.
-						</p>
-					)}
-				</>
+			{!canCreate && (
+				<div className='alert alert-warning'>
+					Host capacity or target user quota is exhausted. Adjust existing containers to free resources.
+				</div>
 			)}
 
-			<label htmlFor='container-ram'>
-				RAM: {formatRam(ramMb)} of {formatRam(effectiveHeadroom.ramMb)} available
-			</label>
-			<input
-				id='container-ram'
-				name='ram'
-				type='range'
-				min={effectiveHeadroom.ramMb >= RAM_STEP_MB ? RAM_STEP_MB : 0}
-				max={Math.max(effectiveHeadroom.ramMb, 0)}
-				step={RAM_STEP_MB}
-				value={Math.min(ramMb, Math.max(effectiveHeadroom.ramMb, 0))}
-				onChange={(event) => setRamMb(Number(event.target.value))}
-				disabled={effectiveHeadroom.ramMb < RAM_STEP_MB}
-			/>
-			{effectiveHeadroom.ramMb < RAM_STEP_MB && (
-				<p className='hint' role='status'>
-					Not enough headroom to select a RAM limit with the current step size.
-				</p>
-			)}
-			{/* A stepper rather than a slider: core counts are small integers where
-          an exact value matters, and dragging for "2" is worse than typing it. */}
-			<label htmlFor='container-cpu'>CPU cores (max {accounting ? effectiveHeadroom.cpu : FALLBACK_MAX_CPU})</label>
-			<input
-				id='container-cpu'
-				name='cpu'
-				type='number'
-				min={effectiveHeadroom.cpu >= 1 ? 1 : 0}
-				max={Math.max(effectiveHeadroom.cpu, 0)}
-				step={1}
-				value={Math.min(cpu, Math.max(effectiveHeadroom.cpu, 0))}
-				onChange={(event) => setCpu(Number(event.target.value))}
-				disabled={effectiveHeadroom.cpu < 1}
-			/>
-			{effectiveHeadroom.cpu < 1 && (
-				<p className='hint' role='status'>
-					Not enough CPU quota or host capacity available to choose a core limit.
-				</p>
-			)}
+			<form className='creation-form' onSubmit={(e) => void handleSubmit(e)}>
+				<div className='form-grid'>
+					{/* Name Field */}
+					<div className='form-group'>
+						<label htmlFor='container-name'>Container Identifier</label>
+						<input
+							id='container-name'
+							type='text'
+							value={name}
+							onChange={(e) => setName(e.target.value)}
+							placeholder='e.g. web-worker-01'
+							pattern='^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+							title='1-63 chars, lowercase letters, numbers, and hyphens. Must start with a letter.'
+							required
+							disabled={submitting}
+						/>
+						<span className='field-hint'>Lowercase letters, digits, hyphens only.</span>
+					</div>
 
-			<label htmlFor='container-disk'>
-				Disk: {diskGb} GB of {effectiveHeadroom.diskGb} GB available
-				{selectedStoragePool ? ` on pool ${selectedStoragePool.name}` : ""}
-			</label>
-			<input
-				id='container-disk'
-				name='disk'
-				type='range'
-				min={effectiveHeadroom.diskGb >= 1 ? 1 : 0}
-				max={Math.max(effectiveHeadroom.diskGb, 0)}
-				step={1}
-				value={Math.min(diskGb, Math.max(effectiveHeadroom.diskGb, 0))}
-				onChange={(event) => setDiskGb(Number(event.target.value))}
-				disabled={effectiveHeadroom.diskGb < 1}
-			/>
-			{effectiveHeadroom.diskGb < 1 && (
-				<p className='hint' role='status'>
-					Not enough disk quota or host capacity available to choose a disk limit.
-				</p>
-			)}
+					{/* Image Selection */}
+					<div className='form-group'>
+						<label htmlFor='container-image'>OS Image</label>
+						{options && options.images.length > 0 ?
+							<select
+								id='container-image'
+								value={image}
+								onChange={(e) => setImage(e.target.value)}
+								required
+								disabled={submitting}>
+								<option value=''>Select cached image…</option>
+								{options.images.map((img) => (
+									<option key={img.alias} value={img.alias}>
+										{img.alias} {img.description ? `(${img.description})` : ""}
+									</option>
+								))}
+							</select>
+						:	<input
+								id='container-image'
+								type='text'
+								value={image}
+								onChange={(e) => setImage(e.target.value)}
+								placeholder='e.g. ubuntu:22.04'
+								required
+								disabled={submitting}
+							/>
+						}
+						<span className='field-hint'>LXD image alias or remote image identifier.</span>
+					</div>
 
-			{/* Both dropdowns lead with a blank "default" option rather than
-			    preselecting the first pool or network. Blank means "inherit
-			    the default profile", which is what LXD does on its own — so
-			    the default choice changes nothing, and any other choice is a
-			    deliberate override. */}
-			<label htmlFor='container-network'>Network</label>
-			<select
-				id='container-network'
-				name='network'
-				value={network}
-				onChange={(event) => setNetwork(event.target.value)}>
-				<option value=''>Default profile</option>
-				{(options?.networks ?? []).map((entry) => (
-					<option key={entry.name} value={entry.name}>
-						{entry.name}
-						{entry.type ? ` (${entry.type})` : ""}
-					</option>
-				))}
-			</select>
+					{/* Target User Pre-Assignment */}
+					<div className='form-group'>
+						<label htmlFor='container-assignee'>Initial Ownership</label>
+						<select
+							id='container-assignee'
+							value={assigneeId}
+							onChange={(e) => setAssigneeId(e.target.value)}
+							disabled={submitting}>
+							<option value=''>Unassigned (Admin management only)</option>
+							{accounting?.users.map((user) => (
+								<option key={user.id} value={user.id}>
+									{user.email} ({user.role})
+								</option>
+							))}
+						</select>
+						<span className='field-hint'>Pre-assign container to a user during provisioning.</span>
+					</div>
 
-			<label htmlFor='container-pool'>Storage pool</label>
-			<select
-				id='container-pool'
-				name='storage_pool'
-				value={storagePool}
-				onChange={(event) => setStoragePool(event.target.value)}>
-				<option value=''>Default profile</option>
-				{(options?.storage_pools ?? []).map((entry) => (
-					<option key={entry.name} value={entry.name}>
-						{entry.name}
-						{entry.driver ? ` (${entry.driver})` : ""}
-						{entry.available_gb !== undefined ? ` — ${entry.available_gb}GB available` : ""}
-					</option>
-				))}
-			</select>
+					{/* Optional Description */}
+					<div className='form-group'>
+						<label htmlFor='container-description'>Description (Optional)</label>
+						<input
+							id='container-description'
+							type='text'
+							value={description}
+							onChange={(e) => setDescription(e.target.value)}
+							placeholder='e.g. Production microservice node'
+							disabled={submitting}
+						/>
+					</div>
+				</div>
 
-			{/* Says why the two dropdowns above are empty. Without this an
-			    unreachable LXD looks like a host with no networks or pools. */}
-			{(options === null || options.stale) && (
-				<p className='hint' role='status'>
-					Could not read the host's networks and storage pools, so only the default profile is offered.
-				</p>
-			)}
+				{/* Resource Sliders Group */}
+				<div className='sliders-panel'>
+					<h3>Resource Allocation</h3>
 
-			{/* Surface LXD-level errors (e.g., socket not found) so an admin can
-				see why the dropdowns are empty instead of guessing. */}
-			{lxdError && (
-				<p className='hint error' role='status'>
-					Could not read host images: {lxdError}
-				</p>
-			)}
+					<div className='slider-box'>
+						<div className='slider-header'>
+							<label htmlFor='ram-slider'>RAM Allocation</label>
+							<span className='slider-value mono'>{formatRam(ramMb)}</span>
+						</div>
+						<input
+							id='ram-slider'
+							type='range'
+							min={RAM_STEP_MB}
+							max={Math.max(RAM_STEP_MB, effectiveHeadroom.ramMb)}
+							step={RAM_STEP_MB}
+							value={ramMb}
+							onChange={(e) => setRamMb(Number(e.target.value))}
+							disabled={submitting || effectiveHeadroom.ramMb < RAM_STEP_MB}
+						/>
+						<div className='slider-footer'>
+							<span>Min: 256 MB</span>
+							<span>Max Headroom: {formatRam(effectiveHeadroom.ramMb)}</span>
+						</div>
+					</div>
 
-			{/* When LXD was reachable but returned no cached images, tell the
-				admin so they can import an image on the host (e.g. `lxc image copy`). */}
-			{!options?.stale && Array.isArray(options?.images) && options.images.length === 0 && (
-				<p className='hint' role='status'>
-					No locally cached images found on this host. Import an image on the host (for example: `lxc image copy
-					images:ubuntu/22.04 local: --alias ubuntu:22.04`) and reload this page.
-				</p>
-			)}
+					<div className='slider-box'>
+						<div className='slider-header'>
+							<label htmlFor='cpu-slider'>CPU Core Limits</label>
+							<span className='slider-value mono'>{cpu} Core(s)</span>
+						</div>
+						<input
+							id='cpu-slider'
+							type='range'
+							min={1}
+							max={Math.max(1, effectiveHeadroom.cpu)}
+							step={1}
+							value={cpu}
+							onChange={(e) => setCpu(Number(e.target.value))}
+							disabled={submitting || effectiveHeadroom.cpu < 1}
+						/>
+						<div className='slider-footer'>
+							<span>Min: 1 Core</span>
+							<span>Max Headroom: {effectiveHeadroom.cpu} Cores</span>
+						</div>
+					</div>
 
-			<label htmlFor='container-description'>Description (optional)</label>
-			<input
-				id='container-description'
-				name='description'
-				value={description}
-				onChange={(event) => setDescription(event.target.value)}
-				placeholder='What this container is for'
-			/>
+					<div className='slider-box'>
+						<div className='slider-header'>
+							<label htmlFor='disk-slider'>Disk Allocation</label>
+							<span className='slider-value mono'>{diskGb} GB</span>
+						</div>
+						<input
+							id='disk-slider'
+							type='range'
+							min={1}
+							max={Math.max(1, effectiveHeadroom.diskGb)}
+							step={1}
+							value={diskGb}
+							onChange={(e) => setDiskGb(Number(e.target.value))}
+							disabled={submitting || effectiveHeadroom.diskGb < 1}
+						/>
+						<div className='slider-footer'>
+							<span>Min: 1 GB</span>
+							<span>Max Headroom: {effectiveHeadroom.diskGb} GB</span>
+						</div>
+					</div>
+				</div>
 
-			{/* Checkboxes wrap their label so the text is part of the hit
-			    target, which a separate <label htmlFor> would not give. */}
-			<label className='toggle'>
-				<input
-					type='checkbox'
-					name='autostart'
-					checked={autostart}
-					onChange={(event) => setAutostart(event.target.checked)}
-				/>
-				Start automatically when the host boots
-			</label>
+				{/* Advanced Configuration Accordion / Row */}
+				<div className='advanced-grid'>
+					<div className='form-group'>
+						<label htmlFor='container-network'>Network Bridge</label>
+						<select
+							id='container-network'
+							value={network}
+							onChange={(e) => setNetwork(e.target.value)}
+							disabled={submitting}>
+							<option value=''>Default Host Profile</option>
+							{options?.networks.map((net) => (
+								<option key={net.name} value={net.name}>
+									{net.name} ({net.type || "bridge"})
+								</option>
+							))}
+						</select>
+					</div>
 
-			<label className='toggle'>
-				<input
-					type='checkbox'
-					name='ephemeral'
-					checked={ephemeral}
-					onChange={(event) => setEphemeral(event.target.checked)}
-				/>
-				Ephemeral
-			</label>
-			{/* Spelled out because "ephemeral" understates it: this deletes the
-			    container on its first stop, and there is no undo. */}
-			<p className='hint'>Deletes itself permanently the first time it stops.</p>
+					<div className='form-group'>
+						<label htmlFor='container-storage-pool'>Storage Pool</label>
+						<select
+							id='container-storage-pool'
+							value={storagePool}
+							onChange={(e) => setStoragePool(e.target.value)}
+							disabled={submitting}>
+							<option value=''>Default Pool</option>
+							{options?.storage_pools.map((pool) => (
+								<option key={pool.name} value={pool.name}>
+									{pool.name} ({pool.driver}) — {pool.available_gb} GB free
+								</option>
+							))}
+						</select>
+					</div>
+				</div>
 
-			<button type='submit' disabled={submitting || !canCreate}>
-				{submitting ? "Creating…" : "Create container"}
-			</button>
+				{/* Toggles */}
+				<div className='toggles-row'>
+					<label className='toggle-label'>
+						<input
+							type='checkbox'
+							checked={ephemeral}
+							onChange={(e) => setEphemeral(e.target.checked)}
+							disabled={submitting}
+						/>
+						<span>Ephemeral (destroy on stop)</span>
+					</label>
 
-			{/* role="alert" so the failure is announced, not just drawn. The
-			    server's wording is passed through untouched. */}
-			{error && (
-				<p className='error' role='alert'>
-					{error}
-				</p>
-			)}
-			{success && (
-				<p className='success' role='status'>
-					{success}
-				</p>
-			)}
-		</form>
+					<label className='toggle-label'>
+						<input
+							type='checkbox'
+							checked={autostart}
+							onChange={(e) => setAutostart(e.target.checked)}
+							disabled={submitting}
+						/>
+						<span>Autostart on system boot</span>
+					</label>
+				</div>
+
+				<div className='form-actions'>
+					<button type='submit' className='primary' disabled={submitting || !canCreate}>
+						{submitting ? "Provisioning Container…" : "Provision & Launch Container"}
+					</button>
+				</div>
+			</form>
+		</section>
 	);
 }

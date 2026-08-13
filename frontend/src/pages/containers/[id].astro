@@ -44,33 +44,84 @@ import SiteHeader from "../../components/SiteHeader.astro";
     <title>Container detail · Server Monitor</title>
   </head>
   <body>
-    <!-- Matched to this page's narrower `main` so the bar's contents line up
-         with the heading beneath it. -->
-    <SiteHeader maxWidth="48rem" />
+    <SiteHeader maxWidth="72rem" />
 
     <main>
-      <!-- No back-link here: the header above carries Dashboard already. -->
-      <h1 id="heading">Container</h1>
+      <!-- Breadcrumbs -->
+      <nav class="breadcrumb-nav">
+        <a href="/">Dashboard</a>
+        <span class="breadcrumb-sep">/</span>
+        <a href="/admin">Containers</a>
+        <span class="breadcrumb-sep">/</span>
+        <span id="breadcrumb-current" class="breadcrumb-current">Instance</span>
+      </nav>
 
-      <!-- Exclusive states, like the dashboard: the script unhides whichever
-           one applies once the metadata fetch resolves. -->
-      <p id="loading">Loading container…</p>
-      <div id="error" role="alert" hidden>
+      <div id="loading" class="detail-loading-skeleton">
+        <div class="skeleton-tile-card">
+          <div class="skeleton-header-row">
+            <div class="skeleton-shimmer skeleton-title-box" style="width: 35%; height: 22px;"></div>
+            <div class="skeleton-shimmer skeleton-badge-box"></div>
+          </div>
+          <div class="skeleton-gauges-grid" style="margin-top: 1rem;">
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <div class="skeleton-shimmer skeleton-cell" style="width: 160px; height: 20px; margin-bottom: 0.75rem;"></div>
+          <div class="skeleton-tile-card" style="height: 220px;">
+            <div class="skeleton-shimmer skeleton-meter-bar" style="height: 100%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <div class="skeleton-shimmer skeleton-cell" style="width: 120px; height: 20px; margin-bottom: 0.75rem;"></div>
+          <div class="skeleton-tile-card" style="height: 260px; background: #090d16; border-color: #1e293b;">
+            <div class="skeleton-shimmer skeleton-cell" style="width: 30%; background: rgba(255,255,255,0.06);"></div>
+            <div class="skeleton-shimmer skeleton-meter-bar" style="height: 70%; margin-top: 1rem; background: rgba(255,255,255,0.04);"></div>
+          </div>
+        </div>
+      </div>
+      <div id="error" class="alert alert-error" role="alert" hidden>
         <p id="error-text"></p>
-        <button type="button" onclick="location.reload()">Retry</button>
+        <button type="button" class="btn" onclick="location.reload()">Retry Connection</button>
       </div>
 
       <div id="detail" hidden>
         <div id="tile"></div>
 
-        <h2>Resource graphs</h2>
-        <div id="graphs"></div>
+        <section class="detail-section-block">
+          <div class="section-headline">
+            <span class="section-icon">📈</span>
+            <h2>Historical Telemetry Streams</h2>
+          </div>
+          <p class="section-subtext">Time-series memory, CPU load, disk consumption, and network I/O.</p>
+          <div id="graphs"></div>
+        </section>
 
-        <h2>Terminal</h2>
-        <!-- Mounted by the script rather than with a client: directive because
-             the container id comes from the URL, which does not exist at build
-             time under static output. -->
-        <div id="terminal"></div>
+        <section class="detail-section-block">
+          <div class="section-headline">
+            <span class="section-icon">💻</span>
+            <h2>Interactive Shell Terminal</h2>
+          </div>
+          <p class="section-subtext">Direct command execution within container environment.</p>
+          <div id="terminal"></div>
+        </section>
       </div>
     </main>
 
@@ -102,7 +153,6 @@ import SiteHeader from "../../components/SiteHeader.astro";
         lxd_created_at?: string;
       }
 
-      const heading = document.getElementById("heading") as HTMLElement;
       const loading = document.getElementById("loading") as HTMLElement;
       const errorEl = document.getElementById("error") as HTMLElement;
       const detail = document.getElementById("detail") as HTMLElement;
@@ -155,7 +205,8 @@ import SiteHeader from "../../components/SiteHeader.astro";
 
           loading.hidden = true;
           detail.hidden = false;
-          heading.textContent = container.lxd_name;
+          const breadcrumbCurrent = document.getElementById("breadcrumb-current");
+          if (breadcrumbCurrent) breadcrumbCurrent.textContent = container.lxd_name;
           document.title = `${container.lxd_name} · Server Monitor`;
 
           createRoot(tileMount).render(
@@ -207,154 +258,38 @@ import SiteHeader from "../../components/SiteHeader.astro";
 
     <style>
       main {
-        font-family: system-ui, sans-serif;
-        max-width: 48rem;
-        margin: 2rem auto;
-        padding: 0 1rem;
+        max-width: 72rem;
+        margin: 1.5rem auto 3rem;
+        padding: 0 1.25rem;
       }
 
-      h1 {
-        font-size: 1.4rem;
-        overflow-wrap: anywhere;
-      }
-
-      h2 {
-        font-size: 1.05rem;
-        margin: 2rem 0 0.5rem;
-      }
-
-      #error {
-        color: #a12;
-      }
-      #error p { margin: 0 0 0.5rem; }
-      #error button {
-        font: inherit;
-        font-size: 0.85rem;
-        padding: 0.3rem 0.9rem;
-        border: 1px solid #a12;
-        border-radius: 4px;
-        background: #fff;
-        color: #a12;
-        cursor: pointer;
-      }
-      #error button:hover { background: #fef0f0; }
-
-      /* Resource graph internals: the component renders semantic markup only,
-         so the page owns the visual treatment just like it does for MetricTile. */
-      :global(.resource-graphs) {
-        margin-top: 0.25rem;
-        padding: 1rem;
-        border: 1px solid #d0d0d0;
-        border-radius: 12px;
-        background: #fff;
-      }
-
-      :global(.resource-graphs-header) {
+      /* Breadcrumbs */
+      .breadcrumb-nav {
         display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 1rem;
-        margin-bottom: 0.75rem;
-      }
-
-      :global(.resource-graphs-header h3) {
-        margin: 0;
-      }
-
-      :global(.resource-graphs-header p) {
-        margin: 0.2rem 0 0;
-        color: #555;
+        align-items: center;
+        gap: 0.5rem;
         font-size: 0.85rem;
-        max-width: 42rem;
+        margin-bottom: 1.25rem;
+        color: var(--text-muted);
       }
 
-      :global(.resource-window-group) {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.4rem;
+      .breadcrumb-nav a {
+        color: var(--text-secondary);
+        text-decoration: none;
+        transition: color var(--transition-fast);
       }
 
-      :global(.resource-window-group button) {
-        font: inherit;
-        padding: 0.3rem 0.8rem;
-        border: 1px solid #d0d0d0;
-        border-radius: 999px;
-        background: #fff;
-        cursor: pointer;
+      .breadcrumb-nav a:hover {
+        color: var(--accent-cyan);
       }
 
-      :global(.resource-window-group button[aria-pressed="true"]) {
-        background: #222;
-        border-color: #222;
-        color: #fff;
+      .breadcrumb-sep {
+        color: var(--border-medium);
       }
 
-      :global(.resource-graphs-status) {
-        margin: 0 0 0.5rem;
-        font-size: 0.85rem;
-        color: #555;
-      }
-
-      :global(.resource-graphs-error) {
-        margin: 0 0 0.5rem;
-        font-size: 0.85rem;
-        color: #a12;
-      }
-
-      :global(.graph-grid) {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-        gap: 0.75rem;
-      }
-
-      :global(.graph-card) {
-        padding: 0.8rem 0.85rem;
-        border: 1px solid #e0e0e0;
-        border-radius: 10px;
-        background: #fbfbfb;
-      }
-
-      :global(.graph-card header) {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 0.75rem;
-        margin-bottom: 0.5rem;
-      }
-
-      :global(.graph-card h4) {
-        margin: 0;
-        font-size: 0.95rem;
-      }
-
-      :global(.graph-card p) {
-        margin: 0.15rem 0 0;
-        font-size: 0.82rem;
-        color: #555;
-      }
-
-      :global(.graph-card span) {
-        font-size: 0.75rem;
-        color: #666;
-      }
-
-      :global(.graph-empty) {
-        display: grid;
-        place-items: center;
-        min-height: 120px;
-        margin: 0;
-        color: #555;
-        text-align: center;
-        font-size: 0.85rem;
-      }
-
-      :global(.history-chart) {
-        display: block;
-        width: 100%;
-        color: #06c;
-        border: 1px solid #e0e0e0;
-        border-radius: 6px;
-        background: #fff;
+      .breadcrumb-current {
+        color: var(--text-primary);
+        font-weight: 600;
       }
 
       /* Terminal internals, styled here for the same reason as the tile and the

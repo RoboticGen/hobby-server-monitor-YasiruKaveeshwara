@@ -2,9 +2,7 @@
  * Admin accounting overview.
  *
  * Renders the host-wide capacity snapshot and the per-user allocation versus
- * quota breakdown from GET /api/accounting. The per-container history view is
- * already covered on the container detail page, so this component keeps the
- * admin dashboard focused on the bird's-eye economics.
+ * quota breakdown from GET /api/accounting.
  */
 import { useEffect, useState } from "react";
 import { apiFetch, ApiError } from "../lib/api";
@@ -44,18 +42,9 @@ function formatNumber(value: number): string {
 	return Number(value.toFixed(2)).toString();
 }
 
-function formatUsage(used: number, quota: number, unit: string): string {
-	if (quota <= 0) return `${formatNumber(used)} ${unit} / unlimited`;
-	return `${formatNumber(used)} / ${formatNumber(quota)} ${unit}`;
-}
-
-function formatPercent(used: number, quota: number): string {
-	if (quota <= 0) return "unlimited";
-	return `${((used / quota) * 100).toFixed(1)}%`;
-}
-
-function isOverQuota(used: number, quota: number): boolean {
-	return quota > 0 && used > quota;
+function getPercent(used: number, total: number): number {
+	if (!total || total <= 0) return 0;
+	return Math.min(100, Math.max(0, (used / total) * 100));
 }
 
 export default function AccountingOverview() {
@@ -90,111 +79,98 @@ export default function AccountingOverview() {
 
 	if (loading) {
 		return (
-			<section className='accounting-panel'>
-				<p>Loading accounting…</p>
+			<section className='accounting-panel glass-card'>
+				<div className='panel-loading'>
+					<span className='pulse-dot'></span>
+					<span>Querying host economics & capacity telemetry…</span>
+				</div>
 			</section>
 		);
 	}
 
 	if (error || !data) {
 		return (
-			<section className='accounting-panel'>
+			<section className='accounting-panel glass-card'>
 				<div className='panel-heading'>
-					<h2>Usage accounting</h2>
+					<h2>Host Allocation & Accounting</h2>
 				</div>
-				<p className='error'>{error ?? "No accounting data available."}</p>
+				<div className='alert alert-error'>{error ?? "No accounting telemetry available."}</div>
 			</section>
 		);
 	}
 
 	const host = data.host;
+	const ramPct = host ? getPercent(data.allocated.ram_mb, host.ram_mb) : 0;
+	const cpuPct = host ? getPercent(data.allocated.cpu, host.cpu) : 0;
+	const diskPct = host ? getPercent(data.allocated.disk_gb, host.disk_gb) : 0;
 
 	return (
-		<section className='accounting-panel'>
+		<section className='accounting-panel glass-card'>
 			<div className='panel-heading'>
-				<h2>Usage accounting</h2>
-				{data.stale && <span className='stale'>Host data stale</span>}
+				<div className='heading-title-group'>
+					<h2>Host Capacity & Economics</h2>
+					<span className='containers-badge'>{data.allocated.container_count} Active Containers</span>
+				</div>
+				{data.stale && (
+					<span className='status-badge frozen'>Host Data Stale {data.host_error ? `(${data.host_error})` : ""}</span>
+				)}
 			</div>
 
-			{data.stale && data.host_error && <p className='hint'>Host capacity unavailable: {data.host_error}</p>}
-
-			<div className='summary-grid'>
-				<div className='summary-card'>
-					<h3>Host capacity</h3>
-					{host ?
-						<dl>
-							<dt>RAM</dt>
-							<dd>{formatUsage(data.allocated.ram_mb, host.ram_mb, "MB")}</dd>
-							<dt>CPU</dt>
-							<dd>{formatUsage(data.allocated.cpu, host.cpu, "cores")}</dd>
-							<dt>Disk</dt>
-							<dd>{formatUsage(data.allocated.disk_gb, host.disk_gb, "GB")}</dd>
-							<dt>Containers</dt>
-							<dd>{data.allocated.container_count}</dd>
-						</dl>
-					:	<p className='hint'>Host totals unavailable while LXD is offline.</p>}
+			<div className='capacity-grid'>
+				{/* RAM Card */}
+				<div className='stat-box'>
+					<div className='stat-header'>
+						<span className='stat-label'>RAM PROMISED</span>
+						<span className='stat-pct mono'>{host ? `${ramPct.toFixed(1)}%` : "—"}</span>
+					</div>
+					<div className='stat-values'>
+						<span className='stat-main mono'>{formatNumber(data.allocated.ram_mb)} MB</span>
+						<span className='stat-sub mono'>/ {host ? `${formatNumber(host.ram_mb)} MB` : "offline"}</span>
+					</div>
+					<div className='progress-bar-container'>
+						<div
+							className={`progress-bar-fill ${ramPct > 90 ? "warning" : ""}`}
+							style={{ width: `${Math.max(2, ramPct)}%` }}
+						/>
+					</div>
 				</div>
 
-				<div className='summary-card'>
-					<h3>Allocated totals</h3>
-					<dl>
-						<dt>RAM allocated</dt>
-						<dd>{formatNumber(data.allocated.ram_mb)} MB</dd>
-						<dt>CPU allocated</dt>
-						<dd>{formatNumber(data.allocated.cpu)} cores</dd>
-						<dt>Disk allocated</dt>
-						<dd>{formatNumber(data.allocated.disk_gb)} GB</dd>
-						<dt>Active containers</dt>
-						<dd>{data.allocated.container_count}</dd>
-					</dl>
+				{/* CPU Card */}
+				<div className='stat-box'>
+					<div className='stat-header'>
+						<span className='stat-label'>CPU CORES ALLOCATED</span>
+						<span className='stat-pct mono'>{host ? `${cpuPct.toFixed(1)}%` : "—"}</span>
+					</div>
+					<div className='stat-values'>
+						<span className='stat-main mono'>{formatNumber(data.allocated.cpu)} Cores</span>
+						<span className='stat-sub mono'>/ {host ? `${formatNumber(host.cpu)} Cores` : "offline"}</span>
+					</div>
+					<div className='progress-bar-container'>
+						<div
+							className={`progress-bar-fill ${cpuPct > 90 ? "warning" : ""}`}
+							style={{ width: `${Math.max(2, cpuPct)}%` }}
+						/>
+					</div>
+				</div>
+
+				{/* Disk Card */}
+				<div className='stat-box'>
+					<div className='stat-header'>
+						<span className='stat-label'>STORAGE PROMISED</span>
+						<span className='stat-pct mono'>{host ? `${diskPct.toFixed(1)}%` : "—"}</span>
+					</div>
+					<div className='stat-values'>
+						<span className='stat-main mono'>{formatNumber(data.allocated.disk_gb)} GB</span>
+						<span className='stat-sub mono'>/ {host ? `${formatNumber(host.disk_gb)} GB` : "offline"}</span>
+					</div>
+					<div className='progress-bar-container'>
+						<div
+							className={`progress-bar-fill ${diskPct > 90 ? "warning" : ""}`}
+							style={{ width: `${Math.max(2, diskPct)}%` }}
+						/>
+					</div>
 				</div>
 			</div>
-
-			<div className='table-wrap'>
-				<table>
-					<thead>
-						<tr>
-							<th scope='col'>User</th>
-							<th scope='col'>Role</th>
-							<th scope='col'>Status</th>
-							<th scope='col'>RAM</th>
-							<th scope='col'>CPU</th>
-							<th scope='col'>Disk</th>
-							<th scope='col'>Containers</th>
-						</tr>
-					</thead>
-					<tbody>
-						{data.users.map((user) => {
-							const overRam = isOverQuota(user.allocation.ram_mb, user.quota.ram_mb);
-							const overCpu = isOverQuota(user.allocation.cpu, user.quota.cpu);
-							const overDisk = isOverQuota(user.allocation.disk_gb, user.quota.disk_gb);
-
-							return (
-								<tr key={user.id} data-status={user.status}>
-									<td>{user.email}</td>
-									<td>{user.role}</td>
-									<td>{user.status}</td>
-									<td className={overRam ? "warn" : ""}>
-										{formatUsage(user.allocation.ram_mb, user.quota.ram_mb, "MB")} (
-										{formatPercent(user.allocation.ram_mb, user.quota.ram_mb)})
-									</td>
-									<td className={overCpu ? "warn" : ""}>
-										{formatUsage(user.allocation.cpu, user.quota.cpu, "cores")} (
-										{formatPercent(user.allocation.cpu, user.quota.cpu)})
-									</td>
-									<td className={overDisk ? "warn" : ""}>
-										{formatUsage(user.allocation.disk_gb, user.quota.disk_gb, "GB")} (
-										{formatPercent(user.allocation.disk_gb, user.quota.disk_gb)})
-									</td>
-									<td>{user.container_count}</td>
-								</tr>
-							);
-						})}
-					</tbody>
-				</table>
-			</div>
-
-			<p className='hint'>Per-container time-window charts are available from each container's detail page.</p>
 		</section>
 	);
 }

@@ -9,53 +9,55 @@
  */
 import { useState } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { clearCachedSession } from "../lib/session";
 
 /** Response body of POST /api/auth/logout (backend/resources/auth.py). */
 interface LogoutResponse {
-  message: string;
+	message: string;
 }
 
 export default function LogoutButton() {
-  // Disables the button while the request is in flight, so an impatient
-  // double-click cannot fire a second logout against an already-revoked
-  // session and surface a confusing error.
-  const [pending, setPending] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+	// Disables the button while the request is in flight, so an impatient
+	// double-click cannot fire a second logout against an already-revoked
+	// session and surface a confusing error.
+	const [pending, setPending] = useState<boolean>(false);
+	const [error, setError] = useState<string | null>(null);
 
-  /**
-   * Revoke the session, then navigate to the login page.
-   *
-   * Navigation uses a full page load (`location.assign`) rather than a
-   * client-side route change so that no state from the signed-in session
-   * survives in memory after sign-out.
-   */
-  async function handleLogout(): Promise<void> {
-    setPending(true);
-    setError(null);
+	/**
+	 * Revoke the session, then navigate to the login page.
+	 *
+	 * Navigation uses a full page load (`location.assign`) rather than a
+	 * client-side route change so that no state from the signed-in session
+	 * survives in memory after sign-out.
+	 */
+	async function handleLogout(): Promise<void> {
+		setPending(true);
+		setError(null);
 
-    try {
-      await apiFetch<LogoutResponse>("/api/auth/logout", { method: "POST" });
-      window.location.assign("/login");
-    } catch (err) {
-      // Failing to reach the backend means the session may still be live, so
-      // the user is told rather than being sent to /login as if it worked.
-      setError(
-        err instanceof ApiError
-          ? `Sign out failed (${err.status}): ${err.message}`
-          : "Sign out failed: could not reach the server.",
-      );
-      setPending(false);
-    }
-  }
+		try {
+			await apiFetch<LogoutResponse>("/api/auth/logout", { method: "POST" });
+			clearCachedSession();
+			window.location.assign("/login");
+		} catch (err) {
+			// Failing to reach the backend means the session may still be live, so
+			// the user is told rather than being sent to /login as if it worked.
+			setError(
+				err instanceof ApiError ?
+					`Sign out failed (${err.status}): ${err.message}`
+				:	"Sign out failed: could not reach the server.",
+			);
+			setPending(false);
+		}
+	}
 
-  return (
-    <>
-      <button type="button" onClick={handleLogout} disabled={pending}>
-        {pending ? "Signing out…" : "Sign out"}
-      </button>
-      {/* role="alert" so screen readers announce the failure, which is
+	return (
+		<>
+			<button type='button' onClick={handleLogout} disabled={pending}>
+				{pending ? "Signing out…" : "Sign out"}
+			</button>
+			{/* role="alert" so screen readers announce the failure, which is
           otherwise a silent visual-only change. */}
-      {error && <p role="alert">{error}</p>}
-    </>
-  );
+			{error && <p role='alert'>{error}</p>}
+		</>
+	);
 }

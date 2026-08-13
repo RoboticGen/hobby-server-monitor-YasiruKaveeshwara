@@ -1,101 +1,49 @@
 ---
 // Site header — the primary navigation bar for every signed-in page.
-//
-// It does three things: name the app, link to the routes the current visitor
-// may actually visit, and show who they are with a way out. Pages render it
-// once, immediately inside <body> and above their own <main>.
-//
-// WHY THE LINKS ARE BAKED IN BUT THE SESSION IS NOT:
-// Under static output (decision 7.12 — Falcon serves the built files, there is
-// no Node server in production) this frontmatter runs at BUILD time. That is
-// early enough to know which route is being generated, so the "you are here"
-// marker below needs no JavaScript at all — but far too early to know anything
-// about the visitor, because no session cookie exists at build time. So the
-// markup ships complete and the script only fills in the two things that
-// depend on who is asking: the identity block, and whether the admin links
-// are shown.
-//
-// WHY THIS IS AN .astro COMPONENT AND NOT A .tsx ISLAND:
-// Elsewhere in this project components are React and pages own their styling
-// via :global(...), which works because each of those components appears on
-// one or two pages. A header appears on every page, so that arrangement would
-// copy the same sixty lines of CSS into every page's <style> block — five
-// places to keep in step. An .astro component scopes its own styles, and the
-// nav is mostly plain links that have no reason to wait for React to hydrate.
 import LogoutButton from "./LogoutButton";
 import StatusBanner from "./StatusBanner";
+import "../styles/global.css";
 
 interface Props {
-  /**
-   * Width of the header's content column, so the bar lines up with the page's
-   * own `main` instead of floating at a different width. Defaults to the 60rem
-   * the dashboard and users pages use; the container detail page is narrower
-   * and passes its own.
-   */
   maxWidth?: string;
 }
 
-const { maxWidth = "60rem" } = Astro.props;
+const { maxWidth = "72rem" } = Astro.props;
 
-/** One destination in the bar. */
 interface NavLink {
-  /** Path to link to, with no trailing slash, matched against currentPath. */
   href: string;
   label: string;
-  /** Hidden until GET /api/auth/me confirms the visitor is an admin. */
   adminOnly: boolean;
 }
 
-/**
- * Nav destinations, in the order they appear.
- *
- * `adminOnly` is presentation, NOT a security control — the backend refuses
- * admin endpoints to non-admins whatever the browser shows, and hiding a link
- * protects nothing. It is here because offering someone a link to a page that
- * exists only to turn them away is a broken experience; admin/index.astro
- * already hides its create form on the same reasoning.
- *
- * /containers/view is deliberately absent: it needs a container id, so it is
- * reached from a tile, not from a fixed link. So are the throwaway test pages.
- */
 const navLinks: NavLink[] = [
   { href: "/", label: "Dashboard", adminOnly: false },
   { href: "/admin", label: "Containers", adminOnly: true },
   { href: "/admin/users", label: "Users", adminOnly: true },
 ];
 
-/**
- * The path of the page this header is being rendered into.
- *
- * The trailing slash is trimmed because Astro's default build format emits
- * /admin/index.html, which makes the pathname "/admin/" while the href above
- * is "/admin" — without this every link would compare unequal and no page
- * would ever look current. The regex requires a character before the slash so
- * that "/" is left alone; trimming it to "" would match nothing at all.
- */
 const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
 ---
 
 <header class="site-header">
-  <!--
-    The width comes in as an inline style rather than a class because it is a
-    per-page value, and CSS cannot be parameterised from a prop any other way
-    without generating a rule per caller.
-  -->
   <div class="bar" style={`max-width: ${maxWidth}`}>
-    <a class="brand" href="/">Server Monitor</a>
+    <a class="brand" href="/">
+      <span class="brand-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+          <line x1="6" y1="6" x2="6.01" y2="6"></line>
+          <line x1="6" y1="18" x2="6.01" y2="18"></line>
+        </svg>
+      </span>
+      <span class="brand-text">Server<span class="brand-accent">Monitor</span></span>
+    </a>
 
     <nav id="header-nav" aria-label="Main">
       <ul>
         {
           navLinks.map((link) => (
             <li hidden={link.adminOnly} data-admin-only={link.adminOnly ? "true" : null}>
-              {/*
-                aria-current is the marker for "this is the page you are on",
-                and the stylesheet keys off the same attribute rather than a
-                parallel CSS class, so what a screen reader announces and what
-                is drawn can never disagree.
-              */}
               <a href={link.href} aria-current={currentPath === link.href ? "page" : null}>
                 {link.label}
               </a>
@@ -105,17 +53,22 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
       </ul>
     </nav>
 
-    <!--
-      Exactly one of the four states below is revealed once the session
-      resolves. All start hidden except the pending note, so the bar never
-      flashes "Sign in" at someone who is in fact signed in.
-    -->
     <div class="session">
-      <p id="header-pending" class="muted">Checking session…</p>
+      <p id="header-pending" class="muted">
+        <span class="pulse-dot"></span> Checking session…
+      </p>
 
       <div id="header-identity" class="identity" hidden>
-        <span id="header-email" class="email"></span>
-        <span id="header-role" class="role"></span>
+        <div class="user-chip">
+          <span class="avatar-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          </span>
+          <span id="header-email" class="email"></span>
+          <span id="header-role" class="role"></span>
+        </div>
         <LogoutButton client:load />
       </div>
 
@@ -126,144 +79,170 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
   </div>
 </header>
 
-<!--
-  Step 23.1 — Service-degradation banner (decision 7.10).
-
-  Mounted with client:load so it begins polling GET /health immediately on
-  page load. Placed after the header's closing tag so it sits directly
-  below the nav bar. Because SiteHeader is rendered by every page in the
-  project, this single mount point gives the banner to every page without
-  per-page wiring.
-
-  Polling logic comment (required by the build guide's comment rule):
-  The banner polls GET /health every 30 seconds. That interval is
-  deliberately slower than MetricTile's 10-second poll because /health
-  probes LXD on every call (real daemon load), while /metrics/latest reads
-  a stored sample. 30s bounds how long a stale page can lie.
--->
 <StatusBanner client:load />
 
+<script is:inline>
+  (function () {
+    try {
+      var raw = sessionStorage.getItem("hsm_frontend_session");
+      if (raw) {
+        var user = JSON.parse(raw);
+        if (user && user.email) {
+          var pending = document.getElementById("header-pending");
+          var identity = document.getElementById("header-identity");
+          var email = document.getElementById("header-email");
+          var role = document.getElementById("header-role");
+          var nav = document.getElementById("header-nav");
+
+          if (email) email.textContent = user.email;
+          if (role) role.textContent = user.role;
+          if (identity) identity.hidden = false;
+          if (pending) pending.hidden = true;
+
+          if (user.role === "admin" && nav) {
+            var items = nav.querySelectorAll('li[data-admin-only="true"]');
+            for (var i = 0; i < items.length; i++) {
+              items[i].hidden = false;
+            }
+          }
+        }
+      }
+    } catch (e) {}
+  })();
+</script>
+
 <script>
-  import { apiFetch, ApiError } from "../lib/api";
+  import { syncSession } from "../lib/session";
+  import { ApiError } from "../lib/api";
 
-  /**
-   * The two fields of GET /api/auth/me this header uses. The endpoint also
-   * returns id and status; naming only what is read keeps it clear that the
-   * header does not care about the rest.
-   */
-  interface MeResponse {
-    email: string;
-    role: string;
-  }
-
+  const nav = document.getElementById("header-nav") as HTMLElement;
   const pending = document.getElementById("header-pending") as HTMLElement;
   const identity = document.getElementById("header-identity") as HTMLElement;
-  const emailEl = document.getElementById("header-email") as HTMLElement;
-  const roleEl = document.getElementById("header-role") as HTMLElement;
+  const email = document.getElementById("header-email") as HTMLElement;
+  const role = document.getElementById("header-role") as HTMLElement;
   const signin = document.getElementById("header-signin") as HTMLElement;
   const unavailable = document.getElementById(
     "header-unavailable",
   ) as HTMLElement;
 
-  /** The nav items that only apply to admins, hidden in the markup above. */
-  const adminItems = Array.from(
-    document.querySelectorAll<HTMLElement>("#header-nav [data-admin-only]"),
-  );
-
-  try {
-    const me = await apiFetch<MeResponse>("/api/auth/me");
-
-    // textContent, never innerHTML: the email originates with a third party
-    // (Google) and reaches us through the database, so treating it as markup
-    // would turn the header into an injection vector on every page.
-    emailEl.textContent = me.email;
-    roleEl.textContent = me.role;
-
-    if (me.role === "admin") {
-      for (const item of adminItems) item.hidden = false;
-    }
-
+  function renderUser(user: { email: string; role: string }) {
     pending.hidden = true;
+    signin.hidden = true;
+    unavailable.hidden = true;
+    email.textContent = user.email;
+    role.textContent = user.role;
     identity.hidden = false;
-  } catch (err) {
-    pending.hidden = true;
 
-    if (err instanceof ApiError && err.status === 401) {
-      // No session. The header offers the way in but does NOT redirect — the
-      // page owns that decision, and each one already makes it after its own
-      // /api/auth/me call. Redirecting from chrome as well would mean two
-      // scripts racing to navigate, and would hijack any page that is
-      // legitimately readable while signed out.
-      signin.hidden = false;
+    if (user.role === "admin") {
+      const adminItems = nav.querySelectorAll<HTMLLIElement>(
+        'li[data-admin-only="true"]',
+      );
+      for (const item of adminItems) {
+        item.hidden = false;
+      }
     } else {
-      // A 500 or an unreachable backend must not be dressed up as "signed
-      // out": offering a Sign in link here would send someone to Google to
-      // fix a problem that has nothing to do with their credentials. The same
-      // rule the pages follow for their own error states.
-      unavailable.textContent =
-        err instanceof ApiError
-          ? `Session unavailable (${err.status})`
-          : "Session unavailable";
-      unavailable.hidden = false;
+      const adminItems = nav.querySelectorAll<HTMLLIElement>(
+        'li[data-admin-only="true"]',
+      );
+      for (const item of adminItems) {
+        item.hidden = true;
+      }
     }
   }
+
+  void syncSession({
+    onSuccess(user) {
+      renderUser(user);
+    },
+    onUnauthorized() {
+      pending.hidden = true;
+      identity.hidden = true;
+      signin.hidden = false;
+    },
+    onError(err) {
+      if (identity.hidden) {
+        pending.hidden = true;
+        unavailable.textContent =
+          err instanceof ApiError
+            ? `Session unavailable (${err.status})`
+            : "Session unavailable";
+        unavailable.hidden = false;
+      }
+    },
+  });
 </script>
 
 <style>
-  /* An author `display` value outranks the UA stylesheet's [hidden] rule, and
-     nearly every box in this bar sets one — so without this the "hidden"
-     states would all be visible at once.
-
-     Anchored to .site-header rather than written as a bare [hidden]: Astro
-     leaves a lone attribute selector unscoped, which would emit this as a
-     page-wide rule and quietly change how `hidden` behaves in whichever page
-     the header happens to be dropped into. The descendant form gets the scope
-     attribute on .site-header, confining it to this subtree. */
   .site-header [hidden] {
     display: none !important;
   }
 
-  /* Sticky so the nav stays reachable down a long container list. The opaque
-     background is load-bearing: without it the page's content would show
-     through the bar as it scrolled underneath. */
   .site-header {
     position: sticky;
     top: 0;
-    z-index: 10;
-    background: #fff;
-    border-bottom: 1px solid #d0d0d0;
-    font-family: system-ui, sans-serif;
+    z-index: 50;
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-sans);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
   }
 
-  /* Wraps rather than scrolls or collapses into a menu button: with three
-     links and one email there is nothing here that needs hiding on a narrow
-     screen, and a wrapped bar has no state to get stuck in. */
   .bar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem 1.25rem;
+    justify-content: space-between;
+    gap: 1rem 1.5rem;
     margin: 0 auto;
-    padding: 0.6rem 1rem;
+    padding: 0.75rem 1.25rem;
   }
 
   .brand {
-    font-size: 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 1.05rem;
     font-weight: 700;
-    color: #111;
+    color: var(--text-primary);
     text-decoration: none;
+    letter-spacing: -0.02em;
+    user-select: none;
   }
 
-  /* Takes the slack between the brand and the session block, which is what
-     pushes the identity to the right edge without absolute positioning. */
+  .brand-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, rgba(2, 132, 199, 0.12), rgba(37, 99, 235, 0.08));
+    border: 1px solid var(--border-accent);
+    color: var(--accent-cyan);
+    box-shadow: 0 2px 6px rgba(2, 132, 199, 0.12);
+  }
+
+  .brand-text {
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .brand-accent {
+    color: var(--accent-cyan);
+    margin-left: 1px;
+  }
+
   #header-nav {
-    flex: 1;
+    display: flex;
+    align-items: center;
   }
 
   #header-nav ul {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem;
+    align-items: center;
+    gap: 0.35rem;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -271,132 +250,167 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
 
   #header-nav a {
     display: block;
-    padding: 0.3rem 0.7rem;
-    border-radius: 4px;
-    font-size: 0.9rem;
-    color: #333;
+    padding: 0.4rem 0.85rem;
+    border-radius: var(--radius-full);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-secondary);
     text-decoration: none;
+    transition: all var(--transition-fast);
+    border: 1px solid transparent;
   }
 
   #header-nav a:hover {
-    background: #f0f0f0;
+    color: var(--text-primary);
+    background: #f1f5f9;
   }
 
-  /* Keyed off aria-current for the reason given in the markup: one source of
-     truth for which page is current. */
   #header-nav a[aria-current="page"] {
-    background: #222;
-    color: #fff;
+    background: rgba(2, 132, 199, 0.1);
+    color: var(--accent-cyan);
+    border-color: rgba(2, 132, 199, 0.3);
+    font-weight: 600;
   }
 
   .session {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.75rem;
     font-size: 0.85rem;
   }
 
   .identity {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.65rem;
   }
 
-  /* Long addresses break inside the word rather than widening the bar past
-     the viewport. */
+  .user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.75rem;
+    background: #f8fafc;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+  }
+
+  .avatar-icon {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+  }
+
   .email {
-    font-weight: 600;
-    color: #111;
-    overflow-wrap: anywhere;
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.825rem;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .role {
     padding: 0.1rem 0.45rem;
-    border: 1px solid #d0d0d0;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    letter-spacing: 0.03em;
+    background: #e2e8f0;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-full);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: #555;
+    color: var(--text-secondary);
   }
 
   .signin {
-    padding: 0.25rem 0.75rem;
-    border: 1px solid #1a73e8;
-    border-radius: 4px;
-    background: #1a73e8;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--accent-cyan);
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, #0284c7, #0369a1);
     font-weight: 600;
     color: #fff;
     text-decoration: none;
+    font-size: 0.85rem;
+    box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25);
   }
 
   .muted {
     margin: 0;
-    color: #555;
+    color: var(--text-muted);
+    font-size: 0.825rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
   }
 
-  /* Every focusable control in the bar keeps a visible ring. The nav is the
-     only way between pages, so a keyboard user who loses track of focus here
-     is stranded. */
+  .pulse-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-cyan);
+    box-shadow: 0 0 6px var(--accent-cyan);
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.1); }
+  }
+
   .brand:focus-visible,
   #header-nav a:focus-visible,
   .signin:focus-visible {
-    outline: 3px solid #0b3d91;
+    outline: 2px solid var(--accent-cyan);
     outline-offset: 2px;
   }
 
-  /* Reaches inside the LogoutButton island. React-rendered markup never
-     receives this component's scope attribute, so these selectors have to be
-     global — the same reason the pages style :global(.tile). Scoped by id so
-     they cannot touch buttons elsewhere on the page. */
   :global(#header-identity button) {
-    font: inherit;
-    font-size: 0.85rem;
-    padding: 0.25rem 0.75rem;
-    border: 1px solid #d0d0d0;
-    border-radius: 4px;
-    background: #fff;
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.75rem;
+    border: 1px solid #fecdd3;
+    border-radius: var(--radius-sm);
+    background: #fff1f2;
+    color: #e11d48;
     cursor: pointer;
+    transition: all var(--transition-fast);
   }
 
-  :global(#header-identity button:disabled) {
-    color: #777;
-    cursor: default;
+  :global(#header-identity button:hover:not(:disabled)) {
+    background: #ffe4e6;
+    border-color: #fda4af;
   }
 
   :global(#header-identity p[role="alert"]) {
     margin: 0;
     font-size: 0.8rem;
-    color: #a12;
+    color: #e11d48;
   }
 
-  /* Step 23.1 — StatusBanner styles.
-     The component renders a <p> with className="status-banner" plus a
-     second class of "degraded" or "unreachable". It returns null when
-     healthy, so these rules cost nothing in the normal case. */
   :global(.status-banner) {
     margin: 0;
-    padding: 0.6rem 1rem;
-    font-family: system-ui, sans-serif;
-    font-size: 0.9rem;
+    padding: 0.6rem 1.25rem;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
     text-align: center;
     font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
   }
 
-  /* LXD down — stale data, mutations will 503. Amber conveys "degraded
-     but partially working", distinct from the red of "everything broken". */
   :global(.status-banner.degraded) {
-    background: #fff3cd;
-    color: #664d03;
-    border-bottom: 1px solid #ffecb5;
+    background: #fffbeb;
+    color: #92400e;
+    border-bottom: 1px solid #fde68a;
   }
 
-  /* API itself unreachable — nothing on the page is live. Red because
-     every figure the operator sees is frozen. */
   :global(.status-banner.unreachable) {
-    background: #f8d7da;
-    color: #842029;
-    border-bottom: 1px solid #f5c2c7;
+    background: #fff1f2;
+    color: #9f1239;
+    border-bottom: 1px solid #fecdd3;
   }
 </style>

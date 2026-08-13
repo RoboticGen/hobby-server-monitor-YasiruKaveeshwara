@@ -1,129 +1,179 @@
 ---
 // Landing page and container-user dashboard.
-//
-// Step 16.2 made this page answer "who am I?". Step 22.1 extends that role
-// branch so a non-admin also sees the containers assigned to them here, with
-// live tiles and a link through to each container's history and terminal.
-//
-// WHY THIS PAGE AND NOT A NEW /my-containers ROUTE:
-// Step 22.1 offers either. `/` wins because of what the header nav shows a
-// non-admin: the Containers and Users links are admin-only and stay hidden, so
-// "Dashboard" (`/`) is the *only* route in their navigation. Putting their
-// containers anywhere else would leave them landing on a page that states
-// their email and offers no way to reach the thing they signed in for.
-//
-// WHY THE SESSION CHECK IS CLIENT-SIDE, NOT IN THIS FRONTMATTER:
-// The build guide describes calling apiFetch("/api/auth/me") here at render
-// time. That works only under SSR, and this project is deliberately not SSR:
-// decision 7.12 in PROJECT-PLAN.md says Astro is built to static output and
-// served by the Falcon process itself, so no Node server exists in production
-// to run frontmatter per request. Frontmatter runs once, at BUILD time, where
-// there is no user and no cookie — it would 401 on every build and bake a
-// permanent "redirect to /login" into the HTML, locking every user out.
-// So the check moves to a script that runs in the browser, where the session
-// cookie actually exists. The redirect rule itself is unchanged: 401 sends
-// the user to /login.
 import SiteHeader from "../components/SiteHeader.astro";
+import "../styles/global.css";
 ---
 
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width" />
-    <title>Server Monitor</title>
+    <title>Dashboard · Server Monitor</title>
+    <script is:inline>
+      try {
+        if (sessionStorage.getItem("hsm_frontend_session")) {
+          document.documentElement.classList.add("session-cached");
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <SiteHeader />
 
-    <!--
-      Hidden until the session check resolves. Without this the signed-out
-      user would see a flash of the signed-in layout before the redirect
-      fires, which reads as a bug and briefly implies access they don't have.
-    -->
-    <main id="app" hidden>
-      <h1>Server Monitor</h1>
-      <p>Signed in as <strong id="user-email"></strong> (<span id="user-role"
-        ></span>)</p>
-
-      <section id="quota-card" hidden>
-        <h2>Your quota</h2>
-        <dl>
-          <dt>RAM</dt>
-          <dd id="quota-ram"></dd>
-          <dt>CPU</dt>
-          <dd id="quota-cpu"></dd>
-          <dt>Disk</dt>
-          <dd id="quota-disk"></dd>
-        </dl>
-      </section>
-      <!--
-        Sign out lives in the header now, which is on every page. Keeping a
-        second copy here would put two of the same control on one screen.
-      -->
-
-      <!--
-        The two role branches below are exclusive: the script unhides exactly
-        one of them once /api/auth/me answers.
-      -->
-
-      <!--
-        Admins get signposts, not a personal container list. GET /api/containers
-        returns every container on the host for an admin, so rendering it here
-        would duplicate /admin rather than show "mine".
-      -->
-      <section id="admin-view" hidden>
-        <p>
-          You are signed in as an administrator. Manage
-          <a href="/admin">all containers</a> or
-          <a href="/admin/users">users and quotas</a>.
-        </p>
-      </section>
-
-      <section id="user-view" hidden>
-        <h2>Your containers</h2>
-
-        <!-- Exclusive states again, one per outcome of the list fetch. -->
-        <p id="containers-loading">Loading your containers…</p>
-        <div id="containers-error" role="alert" hidden>
-          <p id="containers-error-text"></p>
-          <button type="button" onclick="location.reload()">Retry</button>
+    <div id="loading" class="global-loading-screen">
+      <div class="cyber-loader-card">
+        <div class="loader-icon-wrap">
+          <div class="loader-pulse-glow"></div>
+          <div class="cyber-spinner"></div>
         </div>
-        <p id="containers-empty" hidden>
-          No containers are assigned to your account yet. An administrator
-          assigns containers to you; once they do, they appear here.
-        </p>
-        <div id="tiles" class="tiles" hidden></div>
+        <h2 class="loader-title">Authenticating Session</h2>
+        <p class="loader-subtitle">Verifying cryptographic authorization tokens…</p>
+      </div>
+    </div>
+
+    <main id="app" hidden>
+      <!-- Hero Welcome Card -->
+      <section class="welcome-card glass-card">
+        <div class="welcome-header">
+          <div class="user-greeting">
+            <span class="greeting-badge">Telemetry Console</span>
+            <h1>Welcome back, <span id="user-email" class="accent-text"></span></h1>
+            <p class="role-desc">Role: <strong id="user-role"></strong></p>
+          </div>
+        </div>
+
+        <!-- Personal Resource Quota Section (For non-admins or restricted users) -->
+        <div id="quota-card" class="quota-container" hidden>
+          <h3>Your Account Quotas</h3>
+          <div class="quota-grid">
+            <div class="quota-box">
+              <span class="quota-label">RAM USAGE</span>
+              <span id="quota-ram" class="quota-val mono"></span>
+            </div>
+            <div class="quota-box">
+              <span class="quota-label">CPU CORES</span>
+              <span id="quota-cpu" class="quota-val mono"></span>
+            </div>
+            <div class="quota-box">
+              <span class="quota-label">DISK STORAGE</span>
+              <span id="quota-disk" class="quota-val mono"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Admin Quick Navigation Signposts -->
+      <section id="admin-view" class="admin-signpost glass-card" hidden>
+        <div class="signpost-content">
+          <div class="signpost-info">
+            <h2>System Administration</h2>
+            <p>You have full administrative privileges to manage host containers, quotas, and user access.</p>
+          </div>
+          <div class="signpost-links">
+            <a href="/admin" class="btn btn-primary">
+              <span>Container Fleet</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12h14"></path>
+                <path d="m12 5 7 7-7 7"></path>
+              </svg>
+            </a>
+            <a href="/admin/users" class="btn">
+              <span>Users & Quotas</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12h14"></path>
+                <path d="m12 5 7 7-7 7"></path>
+              </svg>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- User Assigned Containers View -->
+      <section id="user-view" class="user-containers-section" hidden>
+        <div class="section-title-row">
+          <h2>Your Assigned Containers</h2>
+        </div>
+
+        <div id="containers-loading" class="skeleton-grid">
+          {
+            [1, 2, 3].map(() => (
+              <div class="skeleton-tile-card">
+                <div class="skeleton-header-row">
+                  <div class="skeleton-shimmer skeleton-title-box" />
+                  <div class="skeleton-shimmer skeleton-badge-box" />
+                </div>
+                <div class="skeleton-meter-group">
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 40%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 55%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 50%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                </div>
+                <div class="skeleton-shimmer skeleton-footer-box" />
+              </div>
+            ))
+          }
+        </div>
+
+        <div id="containers-error" class="alert alert-error" role="alert" hidden>
+          <p id="containers-error-text"></p>
+          <button type="button" class="btn" onclick="location.reload()">Retry</button>
+        </div>
+
+        <div id="containers-empty" class="empty-state glass-card" hidden>
+          <div class="empty-icon">🛡️</div>
+          <h3>No Assigned Containers</h3>
+          <p>No active containers are assigned to your account yet. Contact an administrator to grant container access.</p>
+        </div>
+
+        <div id="tiles" class="tiles-grid" hidden></div>
       </section>
     </main>
 
-    <p id="loading">Checking your session…</p>
+    <script is:inline>
+      (function () {
+        try {
+          var raw = sessionStorage.getItem("hsm_frontend_session");
+          if (raw) {
+            var user = JSON.parse(raw);
+            if (user && user.email) {
+              var app = document.getElementById("app");
+              var loading = document.getElementById("loading");
+              var email = document.getElementById("user-email");
+              var role = document.getElementById("user-role");
+              var adminView = document.getElementById("admin-view");
+              var userView = document.getElementById("user-view");
+
+              if (email) email.textContent = user.email;
+              if (role) role.textContent = (user.role || "").toUpperCase();
+              if (loading) loading.hidden = true;
+              if (app) app.hidden = false;
+
+              if (user.role === "admin") {
+                if (adminView) adminView.hidden = false;
+              } else {
+                if (userView) userView.hidden = false;
+              }
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
 
     <script>
       import { createElement } from "react";
       import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../lib/api";
+      import { syncSession, type UserSession } from "../lib/session";
       import MetricTile from "../components/MetricTile";
 
-      /** Shape of GET /api/auth/me (backend/resources/auth.py MeResource). */
-      interface MeResponse {
-        id: number;
-        email: string;
-        role: string;
-        status: string;
-        quota_ram_mb: number;
-        quota_cpu: number;
-        quota_disk_gb: number;
-        allocation: {
-          ram_mb: number;
-          cpu: number;
-          disk_gb: number;
-        };
-      }
-
-      /**
-       * A container as returned by GET /api/containers: the DB row plus the
-       * live LXD fields that _enrich_with_lxd_state() merges in.
-       */
       interface ContainerRecord {
         id: string;
         lxd_name: string;
@@ -157,43 +207,35 @@ import SiteHeader from "../components/SiteHeader.astro";
       ) as HTMLElement;
       const tiles = document.getElementById("tiles") as HTMLElement;
 
-      /**
-       * Draw one live tile per container, each with a link to its detail page.
-       *
-       * Mounting is imperative because the container set is only known at
-       * runtime — Astro's `client:` directives resolve at build time, when
-       * these containers do not exist yet.
-       *
-       * The link is a sibling of the tile rather than a wrapper around it: the
-       * tile updates itself every 10 seconds and carries its own status text,
-       * and a live region inside a link makes for a link whose accessible name
-       * keeps changing under the reader. An explicit link with its own
-       * aria-label naming the container avoids that.
-       */
       function renderTiles(containers: ContainerRecord[]): void {
         tiles.replaceChildren();
 
         for (const container of containers) {
           const cell = document.createElement("div");
-          cell.className = "cell";
+          cell.className = "tile-cell glass-card";
 
           const mount = document.createElement("div");
 
+          const footer = document.createElement("div");
+          footer.className = "tile-footer";
+
           const link = document.createElement("a");
-          // Query string rather than a path segment because the detail route
-          // is a single static shell — see the comment at the top of
-          // pages/containers/[id].astro for why static output forces that.
           link.href = `/containers/view/?container=${encodeURIComponent(container.id)}`;
-          link.className = "detail-link";
-          link.textContent = "History and terminal →";
-          // The visible text repeats across every card, so the accessible name
-          // says which container it belongs to.
+          link.className = "detail-action-link";
+          link.innerHTML = `
+            <span>History & Terminal</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M5 12h14"></path>
+              <path d="m12 5 7 7-7 7"></path>
+            </svg>
+          `;
           link.setAttribute(
             "aria-label",
             `History and terminal for ${container.lxd_name}`,
           );
 
-          cell.append(mount, link);
+          footer.appendChild(link);
+          cell.append(mount, footer);
           tiles.appendChild(cell);
 
           createRoot(mount).render(
@@ -210,22 +252,12 @@ import SiteHeader from "../components/SiteHeader.astro";
 
       function formatQuota(used: number, quota: number, unit: string): string {
         if (quota <= 0) {
-          return `${used.toFixed(2)} ${unit} / unlimited`;
+          return `${used.toFixed(1)} ${unit} / unlimited`;
         }
-        return `${used.toFixed(2)} / ${quota.toFixed(2)} ${unit}`;
+        const pct = ((used / quota) * 100).toFixed(0);
+        return `${used.toFixed(1)} / ${quota.toFixed(1)} ${unit} (${pct}%)`;
       }
 
-      /**
-       * Load and render the containers assigned to the signed-in user.
-       *
-       * THIS PAGE DELIBERATELY DOES NO CLIENT-SIDE FILTERING: the backend
-       * already scopes GET /api/containers to the caller's own assignments
-       * (Step 7.1), so the response *is* "my containers". Filtering again here
-       * would put a copy of an authorization rule in the one place the user
-       * fully controls — and the moment the two copies disagree, the browser's
-       * version is the one that looks authoritative while being worthless.
-       * Server-side scoping is the whole point of doing authorization there.
-       */
       async function loadMyContainers(): Promise<void> {
         try {
           const list =
@@ -234,17 +266,12 @@ import SiteHeader from "../components/SiteHeader.astro";
           listLoading.hidden = true;
 
           if (list.containers.length === 0) {
-            // Explicit empty state: a bare heading with nothing under it reads
-            // as "still loading" or "broken" rather than "you have none yet",
-            // and this is the state a newly invited user starts in.
             listEmpty.hidden = false;
           } else {
             tiles.hidden = false;
             renderTiles(list.containers);
           }
         } catch (err) {
-          // Scoped to this section, not the page: the identity line above is
-          // already correct and useful, so a list failure should not blank it.
           listLoading.hidden = true;
           (document.getElementById("containers-error-text") as HTMLElement).textContent =
             err instanceof ApiError
@@ -254,208 +281,252 @@ import SiteHeader from "../components/SiteHeader.astro";
         }
       }
 
-      try {
-        const me = await apiFetch<MeResponse>("/api/auth/me");
-
-        // Assigned via textContent, never innerHTML: the email comes from a
-        // third party (Google) through our database, so treating it as markup
-        // would make it an injection vector.
-        (document.getElementById("user-email") as HTMLElement).textContent =
-          me.email;
-        (document.getElementById("user-role") as HTMLElement).textContent =
-          me.role;
-        quotaCard.hidden = false;
-        quotaRam.textContent = formatQuota(me.allocation.ram_mb, me.quota_ram_mb, "MB");
-        quotaCpu.textContent = formatQuota(me.allocation.cpu, me.quota_cpu, "cores");
-        quotaDisk.textContent = formatQuota(me.allocation.disk_gb, me.quota_disk_gb, "GB");
-
+      function renderDashboard(user: UserSession): void {
         loading.hidden = true;
-        app.hidden = false;
+        (document.getElementById("user-email") as HTMLElement).textContent =
+          user.email;
+        (document.getElementById("user-role") as HTMLElement).textContent =
+          user.role.toUpperCase();
 
-        // The role decides which branch is shown, not what the user is allowed
-        // to fetch — the backend decides that. Both branches would still be
-        // safe if this comparison were wrong; they would just be confusing.
-        if (me.role === "admin") {
+        if (user.role === "admin") {
           adminView.hidden = false;
+          userView.hidden = true;
+          quotaCard.hidden = true;
         } else {
+          adminView.hidden = true;
+          if (user.allocation) {
+            quotaRam.textContent = formatQuota(
+              user.allocation.ram_mb,
+              user.quota_ram_mb,
+              "MB",
+            );
+            quotaCpu.textContent = formatQuota(
+              user.allocation.cpu,
+              user.quota_cpu,
+              "cores",
+            );
+            quotaDisk.textContent = formatQuota(
+              user.allocation.disk_gb,
+              user.quota_disk_gb,
+              "GB",
+            );
+            quotaCard.hidden = false;
+          }
+
           userView.hidden = false;
-          await loadMyContainers();
+          void loadMyContainers();
         }
-      } catch (err) {
-        // 401 is the expected "not signed in" answer, so it redirects rather
-        // than showing an error. `replace` keeps /login out of history: using
-        // Back to return to a page that will bounce you again is a trap.
-        if (err instanceof ApiError && err.status === 401) {
-          window.location.replace("/login");
-        } else {
-          // Anything else (backend down, CORS, 500) must NOT masquerade as a
-          // signed-out state — a redirect loop to /login would hide the real
-          // fault, so the failure is surfaced instead.
-          loading.textContent =
-            err instanceof ApiError
-              ? `Could not check your session (${err.status}): ${err.message}`
-              : "Could not reach the server to check your session.";
-        }
+
+        app.hidden = false;
       }
+
+      void syncSession({
+        onSuccess(user) {
+          renderDashboard(user);
+        },
+        onUnauthorized() {
+          window.location.replace("/login");
+        },
+        onError(err) {
+          if (app.hidden) {
+            loading.hidden = true;
+            const errorMsg = document.createElement("div");
+            errorMsg.className = "alert alert-error";
+            errorMsg.textContent =
+              err instanceof ApiError
+                ? `Session error (${err.status}): ${err.message}`
+                : "Could not reach the server. Please check the backend connection.";
+            document.body.appendChild(errorMsg);
+          }
+        },
+      });
     </script>
 
     <style>
-      main {
-        font-family: system-ui, sans-serif;
-        max-width: 60rem;
-        margin: 2rem auto;
-        padding: 0 1rem;
+      .global-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        padding: 5rem 1rem;
+        color: var(--text-secondary);
+        font-size: 0.95rem;
       }
 
-      h1 {
-        font-size: 1.4rem;
+      .welcome-card {
+        margin-bottom: 2rem;
       }
 
-      h2 {
-        font-size: 1.1rem;
-        margin: 2rem 0 0.75rem;
+      .greeting-badge {
+        display: inline-block;
+        padding: 0.2rem 0.65rem;
+        background: var(--accent-cyan-dim);
+        border: 1px solid rgba(6, 182, 212, 0.3);
+        border-radius: var(--radius-full);
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--accent-cyan-light);
+        margin-bottom: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
       }
 
-      #quota-card {
-        margin: 1rem 0 1.5rem;
-        padding: 0.9rem 1rem;
-        border: 1px solid #d0d0d0;
-        border-radius: 8px;
-        background: #fff;
+      .accent-text {
+        color: var(--accent-cyan-light);
       }
 
-      #quota-card h2 {
-        margin: 0 0 0.75rem;
-      }
-
-      #quota-card dl {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 0.2rem 0.75rem;
+      .role-desc {
+        color: var(--text-secondary);
         margin: 0;
+        font-size: 0.875rem;
       }
 
-      #quota-card dt {
-        color: #555;
+      .quota-container {
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid var(--border-subtle);
       }
 
-      #quota-card dd {
-        margin: 0;
-        font-variant-numeric: tabular-nums;
-      }
-
-      #loading {
-        font-family: system-ui, sans-serif;
-        max-width: 60rem;
-        margin: 2rem auto;
-        padding: 0 1rem;
-      }
-
-      #containers-error {
-        color: #a12;
-      }
-      #containers-error p { margin: 0 0 0.5rem; }
-      #containers-error button {
-        font: inherit;
+      .quota-container h3 {
         font-size: 0.85rem;
-        padding: 0.3rem 0.9rem;
-        border: 1px solid #a12;
-        border-radius: 4px;
-        background: #fff;
-        color: #a12;
-        cursor: pointer;
-      }
-      #containers-error button:hover { background: #fef0f0; }
-
-      #containers-empty {
-        color: #555;
-        max-width: 34rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        margin-bottom: 0.75rem;
       }
 
-      .tiles {
+      .quota-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
         gap: 1rem;
       }
 
-      /* `hidden` alone does not hide a grid: an author `display` value outranks
-         the UA stylesheet's [hidden] { display: none }, so the empty grid would
-         still occupy layout. Written as .tiles[hidden] rather than a bare
-         [hidden] because Astro leaves a lone attribute selector unscoped and
-         emits it globally. */
-      .tiles[hidden] {
-        display: none;
-      }
-
-      /* Each cell stacks its tile and the tile's detail link, so the links line
-         up along the bottom of the row instead of floating mid-card. */
-      .cell {
+      .quota-box {
         display: flex;
         flex-direction: column;
-        gap: 0.4rem;
+        gap: 0.25rem;
+        padding: 0.85rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
       }
 
-      .detail-link {
-        font-size: 0.85rem;
-        color: #06c;
+      .quota-label {
+        font-size: 0.725rem;
+        color: var(--text-muted);
+        font-weight: 600;
+        letter-spacing: 0.04em;
       }
 
-      .detail-link:focus-visible {
-        outline: 3px solid #0b3d91;
-        outline-offset: 2px;
+      .quota-val {
+        font-size: 0.9rem;
+        color: var(--text-primary);
+        font-weight: 600;
       }
 
-      /* Tile internals are styled here rather than in MetricTile.tsx because
-         the component renders plain semantic markup and carries no styles of
-         its own, so each page controls how its tiles look. */
-      :global(.tile) {
-        border: 1px solid #d0d0d0;
-        border-radius: 6px;
-        padding: 0.75rem 1rem;
-        /* Fills its cell so neighbouring tiles in a row match height even when
-           one of them is showing an extra status line. */
-        height: 100%;
-        box-sizing: border-box;
+      .admin-signpost {
+        margin-bottom: 2rem;
       }
 
-      :global(.tile header) {
+      .signpost-content {
         display: flex;
+        align-items: center;
         justify-content: space-between;
-        align-items: baseline;
-        gap: 0.5rem;
+        gap: 1.5rem;
+        flex-wrap: wrap;
       }
 
-      :global(.tile h3) {
+      .signpost-info h2 {
+        margin: 0 0 0.4rem;
+      }
+
+      .signpost-info p {
         margin: 0;
-        font-size: 1rem;
-        overflow-wrap: anywhere;
-      }
-
-      :global(.tile .state) {
-        font-size: 0.8rem;
-        color: #555;
-      }
-
-      :global(.tile dl) {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 0.15rem 0.75rem;
-        margin: 0.75rem 0 0;
         font-size: 0.9rem;
       }
 
-      :global(.tile dt) {
-        color: #555;
+      .signpost-links {
+        display: flex;
+        gap: 0.75rem;
       }
 
-      :global(.tile dd) {
+      .user-containers-section {
+        margin-top: 2rem;
+      }
+
+      .section-title-row h2 {
+        margin: 0 0 1rem;
+      }
+
+      .loading-state, .empty-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        padding: 3rem 2rem;
+        text-align: center;
+      }
+
+      .empty-state {
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .empty-icon {
+        font-size: 2.25rem;
+      }
+
+      .empty-state h3 {
         margin: 0;
-        font-variant-numeric: tabular-nums;
       }
 
-      :global(.tile .error) {
-        color: #a12; /* Warning stays readable against the tile background. */
-        font-size: 0.85rem;
+      .empty-state p {
+        color: var(--text-muted);
+        margin: 0;
+        font-size: 0.875rem;
+      }
+
+      .tiles-grid[hidden] {
+        display: none !important;
+      }
+
+      .tile-cell {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 1.25rem;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
+        transition: all var(--transition-normal);
+      }
+
+      .tile-cell:hover {
+        border-color: var(--border-medium);
+        transform: translateY(-2px);
+      }
+
+      .tile-footer {
+        margin-top: 1.25rem;
+        padding-top: 0.85rem;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      .detail-action-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.825rem;
+        font-weight: 600;
+        color: var(--accent-cyan);
+        text-decoration: none;
+        transition: all var(--transition-fast);
+      }
+
+      .detail-action-link:hover {
+        color: var(--accent-cyan-light);
+        gap: 0.6rem;
       }
     </style>
   </body>

@@ -1,98 +1,115 @@
 /**
- * Minimal hand-rolled SVG line chart for a single metric series.
- *
- * WHY HAND-ROLLED AND NOT A CHARTING LIBRARY: this project deliberately
- * keeps dependencies near zero (rule 0.10), and a full charting library is
- * over-engineering for what is at most three single-series line charts on
- * one page. Every chart here needs exactly the same thing — map a list of
- * {time, value} pairs to a <polyline>, with axes as an afterthought — which
- * is ~80 lines of SVG. A library would add tens of kilobytes of bundle for
- * features nothing in the product uses, and it would hide the mapping
- * behind an abstraction the codebase otherwise avoids.
+ * Minimal hand-rolled SVG line chart with gradient fill for a single metric series.
  */
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 
-/** One point on a series, already downsampled server-side (windowed). */
 export interface HistoryPoint {
-	/** ISO-8601 UTC timestamp. */
 	time: string;
-	/** The metric's value at that time, in whatever unit the series uses. */
 	value: number;
 }
 
 export interface HistoryChartProps {
-	/** Points to plot, ordered by time ascending. */
 	points: HistoryPoint[];
-	/** Height of the chart's plot area in SVG units (default 160). */
 	height?: number;
+	color?: string;
 }
 
-/** Horizontal padding inside the SVG so a flat line at the edges is not
-    clipped by the stroke. */
-const PAD_X = 4;
-/** Vertical padding above/below the plotted range for the same reason. */
-const PAD_Y = 6;
+const PAD_X = 6;
+const PAD_Y = 10;
 
-/** Format a pixel co-ordinate as a string without trailing .0 noise. */
 function fmt(n: number): string {
 	return Number.isInteger(n) ? String(n) : n.toFixed(2);
 }
 
-export default function HistoryChart({ points, height = 160 }: HistoryChartProps) {
-	/**
-	 * Build the SVG polyline string from the raw points.
-	 *
-	 * `useMemo` so this only recomputes when the data actually changes —
-	 * the component re-renders every 10s when the live tile next to it
-	 * refreshes, and re-mapping a few hundred points per render is
-	 * unnecessary work even if it is cheap.
-	 *
-	 * No chart when there are fewer than two points: a single point has no
-	 * line to draw, and an empty series would produce a divide-by-zero in
-	 * the range calculation below.
-	 */
-	const linePoints = useMemo(() => {
-		if (points.length < 2) return "";
+export default function HistoryChart({ points, height = 160, color = "#06b6d4" }: HistoryChartProps) {
+	const gradientId = useId();
 
-		const width = 600; // fixed plot width; the SVG scales to its container
-		const values = points.map((point) => point.value);
-		const minValue = Math.min(...values);
-		const maxValue = Math.max(...values);
-		// A flat series (min === max) would divide by zero, so give it a
-		// nominal range; the line then sits centred rather than vanishing.
-		const range = maxValue - minValue || 1;
+	const { linePoints, areaPoints, lastY, minValue, maxValue } = useMemo(() => {
+		if (points.length < 2) {
+			return { linePoints: "", areaPoints: "", lastY: height / 2, minValue: 0, maxValue: 0 };
+		}
+
+		const width = 600;
+		const values = points.map((p) => p.value);
+		const minVal = Math.min(...values);
+		const maxVal = Math.max(...values);
+		const range = maxVal - minVal || 1;
 		const plotHeight = height - 2 * PAD_Y;
 
-		return points
-			.map((point, index) => {
-				const x = PAD_X + (index / (points.length - 1)) * (width - 2 * PAD_X);
-				const y = PAD_Y + (1 - (point.value - minValue) / range) * plotHeight;
-				return `${fmt(x)},${fmt(y)}`;
-			})
-			.join(" ");
+		const coords = points.map((point, index) => {
+			const x = PAD_X + (index / (points.length - 1)) * (width - 2 * PAD_X);
+			const y = PAD_Y + (1 - (point.value - minVal) / range) * plotHeight;
+			return { x, y };
+		});
+
+		const lineStr = coords.map((c) => `${fmt(c.x)},${fmt(c.y)}`).join(" ");
+		const areaStr = `${fmt(coords[0].x)},${height} ${lineStr} ${fmt(coords[coords.length - 1].x)},${height}`;
+
+		return {
+			linePoints: lineStr,
+			areaPoints: areaStr,
+			lastY: coords[coords.length - 1].y,
+			minValue: minVal,
+			maxValue: maxVal,
+		};
 	}, [points, height]);
 
 	const viewBox = `0 0 600 ${height}`;
 
 	return (
-		<svg
-			className='history-chart'
-			viewBox={viewBox}
-			role='img'
-			aria-label='Line chart of this metric over the selected window'>
-			{
-				linePoints ?
-					/* stroke="currentColor" rather than a fixed colour: the line is
-           visible by default (a polyline with no stroke renders as
-           nothing), while the page can still restyle it by setting
-           `color` on the chart, keeping the page-owns-styling rule that
-           MetricTile follows. */
-					<polyline points={linePoints} fill='none' stroke='currentColor' strokeWidth={1.5} strokeLinejoin='round' />
-					/* A deliberately flat, silent placeholder rather than nothing:
-           an empty <svg> collapses to zero height and the tile above it
-           jumps, which reads as a broken render. */
-				:	<line x1={PAD_X} y1={height / 2} x2={600 - PAD_X} y2={height / 2} stroke='#ccc' strokeWidth={1} />
-			}
-		</svg>
+		<div className='history-chart-wrapper'>
+			<svg className='history-chart' viewBox={viewBox} role='img' aria-label='Resource history time series chart'>
+				<defs>
+					<linearGradient id={gradientId} x1='0' y1='0' x2='0' y2='1'>
+						<stop offset='0%' stopColor={color} stopOpacity='0.35' />
+						<stop offset='100%' stopColor={color} stopOpacity='0.0' />
+					</linearGradient>
+				</defs>
+
+				{/* Subtle background grid lines */}
+				<line x1='0' y1={height / 4} x2='600' y2={height / 4} stroke='rgba(255,255,255,0.04)' strokeDasharray='4 4' />
+				<line x1='0' y1={height / 2} x2='600' y2={height / 2} stroke='rgba(255,255,255,0.04)' strokeDasharray='4 4' />
+				<line
+					x1='0'
+					y1={(3 * height) / 4}
+					x2='600'
+					y2={(3 * height) / 4}
+					stroke='rgba(255,255,255,0.04)'
+					strokeDasharray='4 4'
+				/>
+
+				{linePoints ?
+					<>
+						<polygon points={areaPoints} fill={`url(#${gradientId})`} />
+						<polyline
+							points={linePoints}
+							fill='none'
+							stroke={color}
+							strokeWidth={2}
+							strokeLinecap='round'
+							strokeLinejoin='round'
+						/>
+						{/* Glowing end point */}
+						<circle
+							cx={600 - PAD_X}
+							cy={lastY}
+							r={4}
+							fill={color}
+							stroke='#080c14'
+							strokeWidth={2}
+							filter='drop-shadow(0px 0px 4px rgba(6,182,212,0.8))'
+						/>
+					</>
+				:	<line
+						x1={PAD_X}
+						y1={height / 2}
+						x2={600 - PAD_X}
+						y2={height / 2}
+						stroke='rgba(255,255,255,0.1)'
+						strokeWidth={1}
+					/>
+				}
+			</svg>
+		</div>
 	);
 }

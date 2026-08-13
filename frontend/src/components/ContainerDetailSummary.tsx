@@ -1,3 +1,12 @@
+/**
+ * Container detail summary and lifecycle management console.
+ *
+ * Provides an organized, user-friendly control center:
+ * - Instance hero header with live status, IP copy, and lifecycle controls
+ * - 4 real-time telemetry metric cards (CPU, RAM, Disk, Network)
+ * - Resource limit configuration with interactive sliders/inputs
+ * - Container metadata sheet
+ */
 import { useEffect, useRef, useState } from "react";
 import { apiFetch, ApiError } from "../lib/api";
 import type { MetricPoint } from "./MetricTile";
@@ -32,24 +41,16 @@ function formatBytes(bytes: number): string {
 }
 
 function formatDuration(ms: number): string {
-	if (!Number.isFinite(ms) || ms < 0) {
-		return "Unknown";
-	}
+	if (!Number.isFinite(ms) || ms < 0) return "Unknown";
 
 	const seconds = Math.floor(ms / 1000);
 	const minutes = Math.floor(seconds / 60);
 	const hours = Math.floor(minutes / 60);
 	const days = Math.floor(hours / 24);
 
-	if (days > 0) {
-		return `${days}d ${hours % 24}h`;
-	}
-	if (hours > 0) {
-		return `${hours}h ${minutes % 60}m`;
-	}
-	if (minutes > 0) {
-		return `${minutes}m ${seconds % 60}s`;
-	}
+	if (days > 0) return `${days}d ${hours % 24}h`;
+	if (hours > 0) return `${hours}h ${minutes % 60}m`;
+	if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
 	return `${seconds}s`;
 }
 
@@ -84,10 +85,9 @@ export default function ContainerDetailSummary({
 	const [limitRamMb, setLimitRamMb] = useState<number>(ramAllocatedMb);
 	const [limitCpu, setLimitCpu] = useState<number>(cpuAllocated);
 	const [limitDiskGb, setLimitDiskGb] = useState<number>(diskAllocatedGb);
-	const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const [actionMessage, setActionMessage] = useState<string | null>(null);
+	const [actionMessage, setActionMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [copiedIp, setCopiedIp] = useState(false);
 	const previousPoint = useRef<MetricPoint | null>(null);
 
 	const refreshMetadata = async (): Promise<void> => {
@@ -97,13 +97,13 @@ export default function ContainerDetailSummary({
 			setCurrentOsImage(details.lxd_image || image);
 			setCurrentIpAddresses(details.lxd_ip_addresses || []);
 		} catch {
-			// Keep the last known metadata rather than overwriting it with an error.
+			// Keep cached metadata
 		}
 	};
 
 	const handleAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
 		setBusy(true);
-		setActionMessage(`Sending ${action}…`);
+		setActionMessage({ type: "info", text: `Dispatching ${action} command…` });
 
 		try {
 			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
@@ -113,18 +113,21 @@ export default function ContainerDetailSummary({
 			});
 
 			await refreshMetadata();
-			setActionMessage(`Action ${action} successful.`);
+			setActionMessage({ type: "success", text: `Container ${action} completed successfully.` });
 		} catch (err) {
-			setActionMessage(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
+			setActionMessage({
+				type: "error",
+				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
+			});
 		} finally {
 			setBusy(false);
-			window.setTimeout(() => setActionMessage(null), 3000);
+			window.setTimeout(() => setActionMessage(null), 4000);
 		}
 	};
 
 	const handleLimitUpdate = async (): Promise<void> => {
 		setBusy(true);
-		setActionMessage("Updating limits…");
+		setActionMessage({ type: "info", text: "Updating container allocation limits…" });
 
 		try {
 			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
@@ -139,33 +142,47 @@ export default function ContainerDetailSummary({
 				}),
 			});
 
-			setActionMessage("Resource limits updated successfully.");
+			setActionMessage({ type: "success", text: "Resource limits updated successfully." });
 		} catch (err) {
-			setActionMessage(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
+			setActionMessage({
+				type: "error",
+				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
+			});
 		} finally {
 			setBusy(false);
-			window.setTimeout(() => setActionMessage(null), 3000);
+			window.setTimeout(() => setActionMessage(null), 4000);
 		}
 	};
 
 	const handleDelete = async (): Promise<void> => {
-		if (!window.confirm(`Delete container '${lxdName}'? This action is permanent.`)) {
+		if (!window.confirm(`Permanently delete container '${lxdName}'? This cannot be undone.`)) {
 			return;
 		}
 
 		setBusy(true);
-		setActionMessage("Deleting container…");
+		setActionMessage({ type: "info", text: "Terminating and purging container…" });
 
 		try {
 			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
 				method: "DELETE",
 			});
-
 			window.location.replace("/admin");
 		} catch (err) {
-			setActionMessage(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
-		} finally {
+			setActionMessage({
+				type: "error",
+				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
+			});
 			setBusy(false);
+		}
+	};
+
+	const copyIp = async (ip: string) => {
+		try {
+			await navigator.clipboard.writeText(ip);
+			setCopiedIp(true);
+			setTimeout(() => setCopiedIp(false), 2000);
+		} catch {
+			// ignore
 		}
 	};
 
@@ -182,8 +199,6 @@ export default function ContainerDetailSummary({
 
 				if (data.point === null) {
 					setPoint(null);
-					setError(null);
-					setLastUpdated(null);
 					return;
 				}
 
@@ -194,11 +209,8 @@ export default function ContainerDetailSummary({
 
 				previousPoint.current = data.point;
 				setPoint(data.point);
-				setError(null);
-				setLastUpdated(`Updated ${Math.round((Date.now() - Date.parse(data.point.time)) / 1000)}s ago`);
-			} catch (err) {
-				if (cancelled) return;
-				setError(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
+			} catch {
+				// Keep last point
 			}
 		}
 
@@ -211,123 +223,285 @@ export default function ContainerDetailSummary({
 	}, [containerId]);
 
 	const uptimeMs = Date.now() - Date.parse(createdAt);
+	const normStatus = status.toLowerCase();
+
+	const primaryIp = currentIpAddresses.length > 0 ? currentIpAddresses[0] : null;
+	const ramPct =
+		point && ramAllocatedMb > 0 ? Math.min(100, Math.max(0, (point.ram_used_mb / ramAllocatedMb) * 100)) : 0;
+	const diskUsedGb = point ? point.disk_used_mb / 1024 : 0;
+	const diskPct = diskAllocatedGb > 0 ? Math.min(100, Math.max(0, (diskUsedGb / diskAllocatedGb) * 100)) : 0;
 
 	return (
-		<section className='container-summary'>
-			<div className='summary-grid'>
-				<div className='summary-panel'>
-					<div className='summary-heading'>
-						<h2>{lxdName}</h2>
-						<span className={`status-chip status-${status.toLowerCase()}`}>{status}</span>
+		<div className='container-detail-wrapper'>
+			{/* 1. Hero Identity & Lifecycle Action Bar */}
+			<div className='container-hero-card glass-card'>
+				<div className='hero-left-section'>
+					<div className='instance-avatar'>
+						<svg width='28' height='28' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2'>
+							<rect x='2' y='2' width='20' height='8' rx='2' ry='2' />
+							<rect x='2' y='14' width='20' height='8' rx='2' ry='2' />
+							<line x1='6' y1='6' x2='6.01' y2='6' />
+							<line x1='6' y1='18' x2='6.01' y2='18' />
+						</svg>
 					</div>
-
-					<dl>
-						<dt>OS image</dt>
-						<dd>{currentOsImage || image}</dd>
-						<dt>IP address</dt>
-						<dd>{currentIpAddresses.length > 0 ? currentIpAddresses.join(", ") : "None"}</dd>
-						<dt>Architecture</dt>
-						<dd>{architecture}</dd>
-						<dt>Created</dt>
-						<dd>{new Date(createdAt).toLocaleString()}</dd>
-						<dt>Uptime</dt>
-						<dd>{status === "Running" ? formatDuration(uptimeMs) : "Stopped"}</dd>
-					</dl>
+					<div className='instance-titles'>
+						<div className='title-with-badge'>
+							<h1>{lxdName}</h1>
+							<span className={`status-badge ${normStatus}`}>{status}</span>
+						</div>
+						<div className='hero-tags-row'>
+							{primaryIp ?
+								<button
+									type='button'
+									className='tag-chip ip-chip'
+									onClick={() => void copyIp(primaryIp)}
+									title='Click to copy IP'>
+									<span className='mono'>{primaryIp}</span>
+									<span className='chip-copy-icon'>{copiedIp ? "✓" : "📋"}</span>
+								</button>
+							:	<span className='tag-chip muted-chip'>No IPv4</span>}
+							<span className='tag-chip'>{currentOsImage || image}</span>
+							<span className='tag-chip'>{architecture}</span>
+							<span className='tag-chip uptime-chip'>
+								{status === "Running" ? `⏱️ Up ${formatDuration(uptimeMs)}` : `Status: ${status}`}
+							</span>
+						</div>
+					</div>
 				</div>
 
-				<div className='live-panel'>
-					<h3>Live usage</h3>
-					{error ?
-						<p className='error'>{error}</p>
-					: point === null ?
-						<p>No metrics have been collected for this container yet.</p>
-					:	<dl>
-							<dt>CPU</dt>
-							<dd>{cpuPercent === null ? "measuring…" : `${cpuPercent.toFixed(1)}%`}</dd>
-							<dt>RAM</dt>
-							<dd>
-								{point.ram_used_mb.toFixed(0)} / {ramAllocatedMb} MB
-							</dd>
-							<dt>Disk</dt>
-							<dd>
-								{(point.disk_used_mb / 1024).toFixed(2)} / {diskAllocatedGb} GB
-							</dd>
-							<dt>Network</dt>
-							<dd>
-								↓ {formatBytes(point.net_rx_bytes)} ↑ {formatBytes(point.net_tx_bytes)}
-							</dd>
-							<dt>Processes</dt>
-							<dd>{point.pid_count.toFixed(0)}</dd>
-						</dl>
-					}
-
-					<div className='action-row'>
-						<button type='button' onClick={() => void handleAction("start")} disabled={busy}>
-							Start
-						</button>
-						<button type='button' onClick={() => void handleAction("stop")} disabled={busy}>
-							Stop
-						</button>
-						<button type='button' onClick={() => void handleAction("restart")} disabled={busy}>
-							Restart
-						</button>
-						<button type='button' onClick={() => void handleAction("freeze")} disabled={busy}>
-							Freeze
-						</button>
-						<button type='button' onClick={() => void handleAction("unfreeze")} disabled={busy}>
-							Unfreeze
-						</button>
-					</div>
-
-					<div className='limit-editor'>
-						<h4>Resource limits</h4>
-						<label>
-							RAM (MB)
-							<input
-								type='number'
-								min={256}
-								step={256}
-								value={limitRamMb}
-								onChange={(event) => setLimitRamMb(Number(event.target.value))}
-								disabled={busy}
-							/>
-						</label>
-						<label>
-							CPU
-							<input
-								type='number'
-								min={1}
-								step={1}
-								value={limitCpu}
-								onChange={(event) => setLimitCpu(Number(event.target.value))}
-								disabled={busy}
-							/>
-						</label>
-						<label>
-							Disk (GB)
-							<input
-								type='number'
-								min={1}
-								step={1}
-								value={limitDiskGb}
-								onChange={(event) => setLimitDiskGb(Number(event.target.value))}
-								disabled={busy}
-							/>
-						</label>
-						<button type='button' onClick={() => void handleLimitUpdate()} disabled={busy}>
-							Apply limits
-						</button>
-					</div>
-
-					<div className='danger-row'>
-						<button type='button' className='danger-button' onClick={() => void handleDelete()} disabled={busy}>
-							Delete container
-						</button>
-					</div>
-
-					{actionMessage && <p className='action-message'>{actionMessage}</p>}
+				<div className='hero-actions-section'>
+					<button
+						type='button'
+						className='btn'
+						onClick={() => void handleAction("start")}
+						disabled={busy || status === "Running"}>
+						<span>▶ Start</span>
+					</button>
+					<button
+						type='button'
+						className='btn'
+						onClick={() => void handleAction("stop")}
+						disabled={busy || status === "Stopped"}>
+						<span>⏹ Stop</span>
+					</button>
+					<button
+						type='button'
+						className='btn'
+						onClick={() => void handleAction("restart")}
+						disabled={busy || status === "Stopped"}>
+						<span>🔄 Restart</span>
+					</button>
+					<button
+						type='button'
+						className='btn'
+						onClick={() => void handleAction(status === "Frozen" ? "unfreeze" : "freeze")}
+						disabled={busy || status === "Stopped"}>
+						<span>{status === "Frozen" ? "❄️ Unfreeze" : "❄️ Freeze"}</span>
+					</button>
+					<button type='button' className='btn danger' onClick={() => void handleDelete()} disabled={busy}>
+						<span>🗑 Delete</span>
+					</button>
 				</div>
 			</div>
-		</section>
+
+			{actionMessage && (
+				<div
+					className={`alert ${
+						actionMessage.type === "success" ? "alert-success"
+						: actionMessage.type === "error" ? "alert-error"
+						: "alert-warning"
+					}`}>
+					{actionMessage.text}
+				</div>
+			)}
+
+			{/* 2. Real-time Telemetry Metric Cards */}
+			<div className='detail-metrics-grid'>
+				{/* CPU Gauge Card */}
+				<div className='metric-gauge-card glass-card'>
+					<div className='gauge-header'>
+						<div className='gauge-icon cpu-icon'>⚡</div>
+						<div className='gauge-title-wrap'>
+							<span className='gauge-label'>CPU UTILIZATION</span>
+							<span className='gauge-main-val mono'>
+								{cpuPercent === null ? "Measuring…" : `${cpuPercent.toFixed(1)}%`}
+							</span>
+						</div>
+					</div>
+					<div className='progress-bar-container'>
+						<div
+							className={`progress-bar-fill ${cpuPercent && cpuPercent > 85 ? "warning" : ""}`}
+							style={{ width: `${Math.min(100, cpuPercent || 0)}%` }}
+						/>
+					</div>
+					<div className='gauge-footer mono'>
+						<span>Allocated: {cpuAllocated} Cores</span>
+						<span>{status === "Running" ? "Active" : "Idle"}</span>
+					</div>
+				</div>
+
+				{/* RAM Memory Card */}
+				<div className='metric-gauge-card glass-card'>
+					<div className='gauge-header'>
+						<div className='gauge-icon ram-icon'>🧠</div>
+						<div className='gauge-title-wrap'>
+							<span className='gauge-label'>RAM ALLOCATION</span>
+							<span className='gauge-main-val mono'>{point ? `${point.ram_used_mb.toFixed(0)} MB` : "0 MB"}</span>
+						</div>
+					</div>
+					<div className='progress-bar-container'>
+						<div className={`progress-bar-fill ${ramPct > 85 ? "warning" : ""}`} style={{ width: `${ramPct}%` }} />
+					</div>
+					<div className='gauge-footer mono'>
+						<span>Ceiling: {ramAllocatedMb} MB</span>
+						<span>{ramPct.toFixed(0)}% Used</span>
+					</div>
+				</div>
+
+				{/* Disk Storage Card */}
+				<div className='metric-gauge-card glass-card'>
+					<div className='gauge-header'>
+						<div className='gauge-icon disk-icon'>💾</div>
+						<div className='gauge-title-wrap'>
+							<span className='gauge-label'>DISK STORAGE</span>
+							<span className='gauge-main-val mono'>{point ? `${diskUsedGb.toFixed(2)} GB` : "0 GB"}</span>
+						</div>
+					</div>
+					<div className='progress-bar-container'>
+						<div className={`progress-bar-fill ${diskPct > 85 ? "warning" : ""}`} style={{ width: `${diskPct}%` }} />
+					</div>
+					<div className='gauge-footer mono'>
+						<span>Capacity: {diskAllocatedGb} GB</span>
+						<span>{diskPct.toFixed(0)}% Used</span>
+					</div>
+				</div>
+
+				{/* Network & Processes Card */}
+				<div className='metric-gauge-card glass-card'>
+					<div className='gauge-header'>
+						<div className='gauge-icon net-icon'>🌐</div>
+						<div className='gauge-title-wrap'>
+							<span className='gauge-label'>NETWORK & PROCS</span>
+							<span className='gauge-main-val mono'>{point ? `${point.pid_count.toFixed(0)} PIDs` : "0 PIDs"}</span>
+						</div>
+					</div>
+					<div className='net-throughput-row mono'>
+						<span>↓ RX: {point ? formatBytes(point.net_rx_bytes) : "0 B"}</span>
+						<span>↑ TX: {point ? formatBytes(point.net_tx_bytes) : "0 B"}</span>
+					</div>
+					<div className='gauge-footer mono'>
+						<span>Architecture: {architecture}</span>
+						<span>Daemon Synced</span>
+					</div>
+				</div>
+			</div>
+
+			{/* 3. Resource Limits & Configuration Sheet */}
+			<div className='details-two-columns'>
+				{/* Limit Modifier Box */}
+				<div className='config-card glass-card'>
+					<div className='card-section-header'>
+						<span className='section-icon'>⚙️</span>
+						<h3>Resource Limit Adjuster</h3>
+					</div>
+					<p className='section-desc'>Dynamically scale memory, CPU, and storage headroom.</p>
+
+					<div className='limits-form-grid'>
+						<div className='form-group'>
+							<label htmlFor={`limit-ram-${containerId}`}>
+								<span>RAM Limit</span>
+								<span className='mono value-tag'>{limitRamMb} MB</span>
+							</label>
+							<input
+								id={`limit-ram-${containerId}`}
+								type='range'
+								min={256}
+								max={8192}
+								step={256}
+								value={limitRamMb}
+								onChange={(e) => setLimitRamMb(Number(e.target.value))}
+								disabled={busy}
+							/>
+						</div>
+
+						<div className='form-group'>
+							<label htmlFor={`limit-cpu-${containerId}`}>
+								<span>CPU Cores</span>
+								<span className='mono value-tag'>{limitCpu} Cores</span>
+							</label>
+							<input
+								id={`limit-cpu-${containerId}`}
+								type='range'
+								min={1}
+								max={16}
+								step={1}
+								value={limitCpu}
+								onChange={(e) => setLimitCpu(Number(e.target.value))}
+								disabled={busy}
+							/>
+						</div>
+
+						<div className='form-group'>
+							<label htmlFor={`limit-disk-${containerId}`}>
+								<span>Disk Storage</span>
+								<span className='mono value-tag'>{limitDiskGb} GB</span>
+							</label>
+							<input
+								id={`limit-disk-${containerId}`}
+								type='range'
+								min={5}
+								max={100}
+								step={1}
+								value={limitDiskGb}
+								onChange={(e) => setLimitDiskGb(Number(e.target.value))}
+								disabled={busy}
+							/>
+						</div>
+					</div>
+
+					<div className='card-action-footer'>
+						<button type='button' className='primary' onClick={() => void handleLimitUpdate()} disabled={busy}>
+							{busy ? "Saving Changes…" : "Apply Resource Limits"}
+						</button>
+					</div>
+				</div>
+
+				{/* Metadata Sheet */}
+				<div className='config-card glass-card'>
+					<div className='card-section-header'>
+						<span className='section-icon'>📋</span>
+						<h3>Container Metadata</h3>
+					</div>
+					<p className='section-desc'>LXD runtime specifications and identifiers.</p>
+
+					<div className='metadata-table-grid mono'>
+						<div className='meta-row'>
+							<span className='meta-key'>CONTAINER UUID</span>
+							<span className='meta-val'>{containerId}</span>
+						</div>
+						<div className='meta-row'>
+							<span className='meta-key'>LXD INSTANCE</span>
+							<span className='meta-val'>{lxdName}</span>
+						</div>
+						<div className='meta-row'>
+							<span className='meta-key'>OS DISTRIBUTION</span>
+							<span className='meta-val'>{currentOsImage || image}</span>
+						</div>
+						<div className='meta-row'>
+							<span className='meta-key'>ARCHITECTURE</span>
+							<span className='meta-val'>{architecture}</span>
+						</div>
+						<div className='meta-row'>
+							<span className='meta-key'>IPV4 ADDRESS</span>
+							<span className='meta-val'>{primaryIp || "Dynamic / Unassigned"}</span>
+						</div>
+						<div className='meta-row'>
+							<span className='meta-key'>CREATED AT</span>
+							<span className='meta-val'>{new Date(createdAt).toLocaleString()}</span>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
 	);
 }

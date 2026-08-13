@@ -1,22 +1,17 @@
 /**
- * Invite-a-user form (admin only).
+ * Organized, User-Friendly User Invitation & Authorization Form (Admin Only).
  *
- * Mounted on the admin users page. Collects an email, a role, and the initial
- * quota, then POSTs to /api/users and reports the server's own verdict.
- *
- * "Invite" sends nothing. The backend creates the row with status='invited'
- * and authentication is Google-only, so the person simply signs in with that
- * Google address and the OAuth callback upgrades them to 'active' on first
- * login. The copy below says so out loud, because a form labelled "invite"
- * that quietly sends no email otherwise reads as broken.
+ * Features:
+ * - Clean 2-column layout with visual role selection
+ * - 1-Click Quota Profile Presets (Lightweight, Standard, Power User, Unlimited)
+ * - Custom Quota fine-tuning accordion
+ * - Clear field hints and instant validation feedback
  */
 import { useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
 
-/** The only two roles the backend accepts; anything else is a 400. */
 type UserRole = "admin" | "user";
 
-/** Response body of POST /api/users on success (201). */
 interface InvitedUser {
 	id: string;
 	email: string;
@@ -25,61 +20,79 @@ interface InvitedUser {
 }
 
 export interface InviteUserFormProps {
-	/**
-	 * Called after a user is invited successfully, so the page can re-fetch the
-	 * list. Optional because the form is useful (and testable) without a parent
-	 * that cares about the result.
-	 */
 	onInvited?: () => void;
 }
 
-/**
- * Quota values the form opens with.
- *
- * These mirror the example in the backend's own `on_post` docstring rather
- * than the database column defaults, which are 0. Zero means *unlimited* —
- * backend/lxd/quota.py skips the check entirely for a resource whose quota is
- * 0 — so opening at the column defaults would make "invite someone and leave
- * the quota fields alone" silently grant unrestricted use of the host, which
- * is the opposite of what a quota screen should do by accident. Unlimited is
- * still one keystroke away, and the hint below says so.
- */
-const DEFAULT_QUOTA_RAM_MB = 2048;
-const DEFAULT_QUOTA_CPU = 2;
-const DEFAULT_QUOTA_DISK_GB = 20;
+interface QuotaPreset {
+	id: string;
+	label: string;
+	badge: string;
+	ramMb: number;
+	cpu: number;
+	diskGb: number;
+	desc: string;
+}
+
+const PRESETS: QuotaPreset[] = [
+	{
+		id: "light",
+		label: "Lightweight",
+		badge: "1 GB · 1 CPU · 10 GB",
+		ramMb: 1024,
+		cpu: 1,
+		diskGb: 10,
+		desc: "For small microservices and scripts",
+	},
+	{
+		id: "standard",
+		label: "Standard",
+		badge: "2 GB · 2 CPU · 20 GB",
+		ramMb: 2048,
+		cpu: 2,
+		diskGb: 20,
+		desc: "Recommended for general development",
+	},
+	{
+		id: "power",
+		label: "Power User",
+		badge: "4 GB · 4 CPU · 40 GB",
+		ramMb: 4096,
+		cpu: 4,
+		diskGb: 40,
+		desc: "High capacity for heavy builds & databases",
+	},
+	{
+		id: "unlimited",
+		label: "Unlimited",
+		badge: "∞ No Hard Caps",
+		ramMb: 0,
+		cpu: 0,
+		diskGb: 0,
+		desc: "Unrestricted host capacity allocation",
+	},
+];
 
 export default function InviteUserForm({ onInvited }: InviteUserFormProps) {
-	// --- Form fields ---
 	const [email, setEmail] = useState<string>("");
 	const [role, setRole] = useState<UserRole>("user");
-	const [quotaRamMb, setQuotaRamMb] = useState<number>(DEFAULT_QUOTA_RAM_MB);
-	const [quotaCpu, setQuotaCpu] = useState<number>(DEFAULT_QUOTA_CPU);
-	const [quotaDiskGb, setQuotaDiskGb] = useState<number>(DEFAULT_QUOTA_DISK_GB);
+	const [selectedPreset, setSelectedPreset] = useState<string>("standard");
 
-	// --- Request lifecycle ---
+	const [quotaRamMb, setQuotaRamMb] = useState<number>(2048);
+	const [quotaCpu, setQuotaCpu] = useState<number>(2);
+	const [quotaDiskGb, setQuotaDiskGb] = useState<number>(20);
+	const [showCustomLimits, setShowCustomLimits] = useState<boolean>(false);
+
 	const [submitting, setSubmitting] = useState<boolean>(false);
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState<string | null>(null);
 
-	/**
-	 * Submit the invite.
-	 *
-	 * `preventDefault` first, because the default form action is a full page
-	 * navigation that would throw away this island and the session-checked page
-	 * around it.
-	 *
-	 * The email is sent as typed. The address format is not re-validated here
-	 * beyond the browser's own `type="email"` check: the backend lowercases and
-	 * validates it, owns the uniqueness constraint, and answers 409 for a
-	 * duplicate — a rule this form cannot evaluate at all, since it does not
-	 * know who already exists. Re-implementing any of that would create a
-	 * second copy to keep in sync.
-	 *
-	 * Both failure paths end in the same place on purpose: whatever the server
-	 * said is shown verbatim. Its wording names the actual problem ("A user
-	 * with email 'x' already exists", "A valid email address is required"),
-	 * which a generic message would discard.
-	 */
+	const handlePresetSelect = (preset: QuotaPreset) => {
+		setSelectedPreset(preset.id);
+		setQuotaRamMb(preset.ramMb);
+		setQuotaCpu(preset.cpu);
+		setQuotaDiskGb(preset.diskGb);
+	};
+
 	async function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
 		event.preventDefault();
 		setSubmitting(true);
@@ -91,7 +104,7 @@ export default function InviteUserForm({ onInvited }: InviteUserFormProps) {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
-					email,
+					email: email.trim(),
 					role,
 					quota_ram_mb: quotaRamMb,
 					quota_cpu: quotaCpu,
@@ -99,112 +112,238 @@ export default function InviteUserForm({ onInvited }: InviteUserFormProps) {
 				}),
 			});
 
-			// Names the resulting status explicitly, so the admin is not left
-			// wondering why the new row does not say "active" like the others.
 			setSuccess(
-				`Invited ${invited.email} as ${invited.role}. They stay "${invited.status}" until they sign in with that Google account.`,
+				`Successfully authorized ${invited.email} (${invited.role.toUpperCase()}). The user can now authenticate instantly using Google OAuth.`,
 			);
-
-			// Only the email is cleared: it is the one field unique to this
-			// invite, while the role and quota are usually the same across a
-			// batch of people being onboarded together.
 			setEmail("");
+			setSelectedPreset("standard");
+			setQuotaRamMb(2048);
+			setQuotaCpu(2);
+			setQuotaDiskGb(20);
+			setShowCustomLimits(false);
 			onInvited?.();
 		} catch (err) {
-			setError(err instanceof ApiError ? err.message : "Could not reach the server to send the invite.");
+			setError(
+				err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server to authorize user.",
+			);
 		} finally {
-			// In `finally` so the button re-enables on the failure path too;
-			// otherwise one rejected invite would leave the form permanently
-			// stuck on "Inviting…".
 			setSubmitting(false);
 		}
 	}
 
 	return (
-		<form className='invite-form' onSubmit={handleSubmit}>
-			<h2>Invite a user</h2>
+		<section className='invite-form-section glass-card'>
+			{/* Section Header */}
+			<div className='invite-card-header'>
+				<div className='invite-header-left'>
+					<div className='invite-badge-icon'>
+						<svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2'>
+							<path d='M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2'></path>
+							<circle cx='8.5' cy='7' r='4'></circle>
+							<line x1='20' y1='8' x2='20' y2='14'></line>
+							<line x1='23' y1='11' x2='17' y2='11'></line>
+						</svg>
+					</div>
+					<div>
+						<h2 className='invite-title'>Authorize & Provision User Access</h2>
+						<p className='section-desc'>Grant Google OAuth sign-in authorization with tailored resource quotas.</p>
+					</div>
+				</div>
+			</div>
 
-			<label htmlFor='invite-email'>Email</label>
-			<input
-				id='invite-email'
-				name='email'
-				type='email'
-				value={email}
-				required
-				onChange={(event) => setEmail(event.target.value)}
-				placeholder='person@example.com'
-			/>
-			<p className='hint'>Must be the address of the Google account they will sign in with.</p>
-
-			<label htmlFor='invite-role'>Role</label>
-			<select id='invite-role' name='role' value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
-				<option value='user'>User — sees only assigned containers</option>
-				<option value='admin'>Admin — full access, quotas not enforced</option>
-			</select>
-
-			{/* Quota fields are `required` for a reason that is easy to miss:
-			    an empty number input reads back as "", and Number("") is 0 —
-			    which this API defines as *unlimited*. Without `required`,
-			    clearing a field to retype it and submitting early would hand
-			    out unrestricted resources instead of raising an error. */}
-			<label htmlFor='invite-ram'>RAM quota (MB)</label>
-			<input
-				id='invite-ram'
-				name='quota_ram_mb'
-				type='number'
-				min={0}
-				step={256}
-				value={quotaRamMb}
-				required
-				onChange={(event) => setQuotaRamMb(Number(event.target.value))}
-			/>
-
-			<label htmlFor='invite-cpu'>CPU quota (cores)</label>
-			<input
-				id='invite-cpu'
-				name='quota_cpu'
-				type='number'
-				min={0}
-				step={0.5}
-				value={quotaCpu}
-				required
-				onChange={(event) => setQuotaCpu(Number(event.target.value))}
-			/>
-
-			<label htmlFor='invite-disk'>Disk quota (GB)</label>
-			<input
-				id='invite-disk'
-				name='quota_disk_gb'
-				type='number'
-				min={0}
-				step={1}
-				value={quotaDiskGb}
-				required
-				onChange={(event) => setQuotaDiskGb(Number(event.target.value))}
-			/>
-
-			<p className='hint'>
-				A quota of 0 means unlimited. Quotas cap the total across every container assigned to the user, not each
-				container.
-			</p>
-
-			<button type='submit' disabled={submitting}>
-				{submitting ? "Inviting…" : "Send invite"}
-			</button>
-
-			{/* role="alert" so a rejected invite is announced rather than just
-			    drawn; the success line is role="status" because it is not an
-			    interruption. Both carry the server's own wording. */}
+			{/* Feedback Banners */}
 			{error && (
-				<p className='error' role='alert'>
-					{error}
-				</p>
+				<div className='alert alert-error' style={{ margin: "1rem 1.5rem 0" }}>
+					<span>⚠️ {error}</span>
+				</div>
 			)}
 			{success && (
-				<p className='success' role='status'>
-					{success}
-				</p>
+				<div className='alert alert-success' style={{ margin: "1rem 1.5rem 0" }}>
+					<span>✓ {success}</span>
+				</div>
 			)}
-		</form>
+
+			<form className='invite-main-form' onSubmit={(e) => void handleSubmit(e)}>
+				<div className='invite-form-grid'>
+					{/* LEFT COLUMN: Identity & Role Selection */}
+					<div className='invite-col-left'>
+						<div className='form-group'>
+							<label htmlFor='invite-email' className='form-label-bold'>
+								Google Account Email <span className='required-star'>*</span>
+							</label>
+							<div className='input-with-glyph'>
+								<span className='input-glyph'>✉️</span>
+								<input
+									id='invite-email'
+									type='email'
+									value={email}
+									onChange={(e) => setEmail(e.target.value)}
+									placeholder='developer@organization.com'
+									required
+									disabled={submitting}
+								/>
+							</div>
+							<span className='field-hint'>User will authenticate with this exact Google address.</span>
+						</div>
+
+						<div className='form-group' style={{ marginTop: "1.25rem" }}>
+							<label className='form-label-bold'>System Authorization Role</label>
+							<div className='role-selection-grid'>
+								<label
+									className={`role-option-card ${role === "user" ? "selected" : ""}`}
+									onClick={() => setRole("user")}>
+									<input
+										type='radio'
+										name='user-role'
+										value='user'
+										checked={role === "user"}
+										onChange={() => setRole("user")}
+										disabled={submitting}
+									/>
+									<div className='role-card-content'>
+										<span className='role-card-title'>Regular User</span>
+										<span className='role-card-desc'>
+											Restricted to personal quota and specifically assigned containers.
+										</span>
+									</div>
+								</label>
+
+								<label
+									className={`role-option-card ${role === "admin" ? "selected" : ""}`}
+									onClick={() => setRole("admin")}>
+									<input
+										type='radio'
+										name='user-role'
+										value='admin'
+										checked={role === "admin"}
+										onChange={() => setRole("admin")}
+										disabled={submitting}
+									/>
+									<div className='role-card-content'>
+										<span className='role-card-title'>Administrator</span>
+										<span className='role-card-desc'>
+											Full host control, container creation, user management & terminal.
+										</span>
+									</div>
+								</label>
+							</div>
+						</div>
+					</div>
+
+					{/* RIGHT COLUMN: Resource Quota Profiles */}
+					<div className='invite-col-right'>
+						<div className='form-group'>
+							<div className='preset-header-row'>
+								<label className='form-label-bold'>Initial Resource Quota Profile</label>
+								<button
+									type='button'
+									className='preset-toggle-btn'
+									onClick={() => setShowCustomLimits(!showCustomLimits)}>
+									{showCustomLimits ? "Use Profile Presets" : "⚙️ Customize Limits"}
+								</button>
+							</div>
+
+							{!showCustomLimits ?
+								<div className='presets-grid'>
+									{PRESETS.map((preset) => {
+										const isSelected = selectedPreset === preset.id;
+										return (
+											<div
+												key={preset.id}
+												className={`preset-card ${isSelected ? "selected" : ""}`}
+												onClick={() => handlePresetSelect(preset)}>
+												<div className='preset-title-row'>
+													<span className='preset-name'>{preset.label}</span>
+													<span className='preset-badge-tag'>{preset.badge}</span>
+												</div>
+												<p className='preset-desc'>{preset.desc}</p>
+											</div>
+										);
+									})}
+								</div>
+							:	<div className='custom-quota-panel'>
+									<div className='custom-inputs-row'>
+										<div className='form-group'>
+											<label htmlFor='invite-ram'>RAM (MB)</label>
+											<input
+												id='invite-ram'
+												type='number'
+												min={0}
+												step={256}
+												value={quotaRamMb}
+												onChange={(e) => {
+													setQuotaRamMb(Number(e.target.value));
+													setSelectedPreset("custom");
+												}}
+												disabled={submitting}
+											/>
+											<span className='field-hint'>0 = Unlimited</span>
+										</div>
+
+										<div className='form-group'>
+											<label htmlFor='invite-cpu'>CPU (Cores)</label>
+											<input
+												id='invite-cpu'
+												type='number'
+												min={0}
+												step={0.5}
+												value={quotaCpu}
+												onChange={(e) => {
+													setQuotaCpu(Number(e.target.value));
+													setSelectedPreset("custom");
+												}}
+												disabled={submitting}
+											/>
+											<span className='field-hint'>0 = Unlimited</span>
+										</div>
+
+										<div className='form-group'>
+											<label htmlFor='invite-disk'>Disk (GB)</label>
+											<input
+												id='invite-disk'
+												type='number'
+												min={0}
+												step={1}
+												value={quotaDiskGb}
+												onChange={(e) => {
+													setQuotaDiskGb(Number(e.target.value));
+													setSelectedPreset("custom");
+												}}
+												disabled={submitting}
+											/>
+											<span className='field-hint'>0 = Unlimited</span>
+										</div>
+									</div>
+								</div>
+							}
+						</div>
+
+						{/* Quota Summary Card */}
+						<div className='quota-summary-strip'>
+							<span className='summary-label'>ALLOCATION CEILING:</span>
+							<span className='summary-val-pill'>{quotaRamMb === 0 ? "∞ RAM" : `${quotaRamMb} MB RAM`}</span>
+							<span className='summary-val-pill'>{quotaCpu === 0 ? "∞ CPU" : `${quotaCpu} Cores`}</span>
+							<span className='summary-val-pill'>{quotaDiskGb === 0 ? "∞ Disk" : `${quotaDiskGb} GB Disk`}</span>
+						</div>
+					</div>
+				</div>
+
+				{/* Form Footer Action */}
+				<div className='invite-form-footer'>
+					<button type='submit' className='btn btn-primary invite-submit-btn' disabled={submitting || !email.trim()}>
+						{submitting ?
+							<>
+								<span className='cyber-spinner' style={{ width: 16, height: 16 }} />
+								<span>Authorizing Account…</span>
+							</>
+						:	<>
+								<span>Authorize & Provision User</span>
+								<span className='btn-arrow'>→</span>
+							</>
+						}
+					</button>
+				</div>
+			</form>
+		</section>
 	);
 }

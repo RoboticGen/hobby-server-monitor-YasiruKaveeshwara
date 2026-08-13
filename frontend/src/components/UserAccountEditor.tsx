@@ -1,9 +1,7 @@
 /**
  * Inline role/status editor for one user.
  *
- * Mounted on the admin users page inside that user's manage panel. It lets
- * an admin change the user's role and status, including a soft revoke via the
- * backend PATCH endpoint.
+ * Mounted on the admin users page inside that user's manage panel.
  */
 import { useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
@@ -74,7 +72,7 @@ export default function UserAccountEditor({ userId, email, role, status, onSaved
 			setBaselineRole(updated.role);
 			setBaselineStatus(updated.status);
 			onSaved?.();
-			setSaved(nextStatus === "revoked" ? `${email} has been revoked.` : "User settings saved.");
+			setSaved(nextStatus === "revoked" ? `${email} access revoked.` : "Account privileges updated.");
 		} catch (err) {
 			setError(err instanceof ApiError ? err.message : "Could not reach the server to save the user.");
 		} finally {
@@ -86,58 +84,53 @@ export default function UserAccountEditor({ userId, email, role, status, onSaved
 		if (!window.confirm(`Revoke ${email}? They will no longer be able to sign in.`)) {
 			return;
 		}
-
 		await submitPatch(undefined, "revoked");
 	}
 
 	return (
-		<form className='account-editor' onSubmit={(event) => void submitPatch(event)}>
-			<h3>Account access — {email}</h3>
+		<form className='account-editor-panel' onSubmit={(event) => void submitPatch(event)}>
+			<h4>Account & Role Privileges</h4>
 
-			<label htmlFor={`user-role-${userId}`}>Role</label>
-			<select
-				id={`user-role-${userId}`}
-				value={currentRole}
-				onChange={(event) => setCurrentRole(event.target.value as UserRole)}
-				disabled={saving}>
-				<option value='user'>User</option>
-				<option value='admin'>Admin</option>
-			</select>
+			{error && <div className='alert alert-error'>{error}</div>}
+			{saved && <div className='alert alert-success'>{saved}</div>}
 
-			<label htmlFor={`user-status-${userId}`}>Status</label>
-			<select
-				id={`user-status-${userId}`}
-				value={currentStatus}
-				onChange={(event) => setCurrentStatus(event.target.value as UserStatus)}
-				disabled={saving}>
-				<option value='invited'>Invited</option>
-				<option value='active'>Active</option>
-				<option value='revoked'>Revoked</option>
-			</select>
+			<div className='editor-fields'>
+				<div className='form-group'>
+					<label htmlFor={`user-role-${userId}`}>System Role</label>
+					<select
+						id={`user-role-${userId}`}
+						value={currentRole}
+						onChange={(e) => setCurrentRole(e.target.value as UserRole)}
+						disabled={saving}>
+						<option value='user'>Regular User</option>
+						<option value='admin'>Administrator</option>
+					</select>
+				</div>
 
-			<button type='submit' disabled={saving || !dirty}>
-				{saving ? "Saving…" : "Save account changes"}
-			</button>
-			<button
-				type='button'
-				className='danger'
-				onClick={() => void handleRevoke()}
-				disabled={saving || currentStatus === "revoked"}>
-				Revoke user
-			</button>
+				<div className='form-group'>
+					<label htmlFor={`user-status-${userId}`}>Account Status</label>
+					<select
+						id={`user-status-${userId}`}
+						value={currentStatus}
+						onChange={(e) => setCurrentStatus(e.target.value as UserStatus)}
+						disabled={saving}>
+						<option value='active'>Active</option>
+						<option value='invited'>Invited</option>
+						<option value='revoked'>Revoked</option>
+					</select>
+				</div>
+			</div>
 
-			<p className='hint'>Revoked users keep their row for audit history, but cannot sign in.</p>
-
-			{error && (
-				<p className='error' role='alert'>
-					{error}
-				</p>
-			)}
-			{saved && !error && (
-				<p className='success' role='status'>
-					{saved}
-				</p>
-			)}
+			<div className='editor-actions'>
+				<button type='submit' className='primary' disabled={!dirty || saving}>
+					{saving ? "Saving…" : "Save Role & Status"}
+				</button>
+				{currentStatus !== "revoked" && (
+					<button type='button' className='danger' onClick={() => void handleRevoke()} disabled={saving}>
+						Revoke Account
+					</button>
+				)}
+			</div>
 		</form>
 	);
 }

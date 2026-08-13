@@ -2,86 +2,91 @@
 // Admin user management: everyone on the system, with their role, status and
 // quota, plus the invite form. Each row opens a panel for editing that user's
 // quota and granting or revoking container access.
-//
-// WHY THE USER FETCH IS CLIENT-SIDE, NOT IN THIS FRONTMATTER:
-// Same reason as index.astro and admin/index.astro. The build guide describes
-// a server-rendered list from GET /api/users, but frontmatter runs at BUILD
-// time under Astro's static output (decision 7.12 — Falcon serves the built
-// files, there is no Node server in production). At build time there is no
-// session cookie, so the call would 401 and bake a permanent error into the
-// HTML. The fetch therefore runs in the browser, where the cookie exists.
 import SiteHeader from "../../components/SiteHeader.astro";
+import "../../styles/global.css";
 ---
 
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width" />
-    <title>Users · Server Monitor</title>
+    <title>Users & Access · Server Monitor</title>
   </head>
   <body>
     <SiteHeader />
 
     <main>
-      <!-- No back-link here: the header above carries Containers already, and
-           two links to the same place stacked on top of each other read as a
-           mistake. -->
-      <h1>Users</h1>
-
-      <!-- Three exclusive states; the script unhides exactly one once the
-           fetch resolves. There is deliberately no empty state: the caller
-           has to be a signed-in admin to read this endpoint at all, so they
-           are always in their own results and the list can never be empty. -->
-      <p id="loading">Loading users…</p>
-      <div id="error" role="alert" hidden>
-        <p id="error-text"></p>
-        <button type="button" onclick="location.reload()">Retry</button>
+      <div class="page-title-row">
+        <div>
+          <h1>User Access & Quotas</h1>
+          <p class="subtitle">Control role authorizations, individual resource ceilings, and container assignments.</p>
+        </div>
       </div>
 
-      <table id="users" hidden>
-        <thead>
-          <tr>
-            <th scope="col">Email</th>
-            <th scope="col">Role</th>
-            <th scope="col">Status</th>
-            <th scope="col">RAM</th>
-            <th scope="col">CPU</th>
-            <th scope="col">Disk</th>
-            <th scope="col">Manage</th>
-          </tr>
-        </thead>
-        <tbody id="users-body"></tbody>
-      </table>
+      <div id="loading" class="skeleton-table-wrap">
+        <div class="skeleton-table-header">
+          <div class="skeleton-shimmer skeleton-cell" style="width: 25%;"></div>
+          <div class="skeleton-shimmer skeleton-cell" style="width: 15%;"></div>
+          <div class="skeleton-shimmer skeleton-cell" style="width: 15%;"></div>
+          <div class="skeleton-shimmer skeleton-cell" style="width: 20%;"></div>
+          <div class="skeleton-shimmer skeleton-cell" style="width: 15%;"></div>
+        </div>
+        {
+          [1, 2, 3, 4].map(() => (
+            <div class="skeleton-table-row">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 25%;" />
+              <div class="skeleton-shimmer skeleton-cell" style="width: 12%; border-radius: 999px;" />
+              <div class="skeleton-shimmer skeleton-cell" style="width: 12%; border-radius: 999px;" />
+              <div class="skeleton-shimmer skeleton-cell" style="width: 20%;" />
+              <div class="skeleton-shimmer skeleton-cell" style="width: 15%;" />
+              <div class="skeleton-shimmer skeleton-cell" style="width: 10%; margin-left: auto;" />
+            </div>
+          ))
+        }
+      </div>
 
-      <!-- Hidden until the caller is confirmed to be an admin, so a non-admin
-           never sees an invite control the API would refuse. -->
+      <div id="error" class="alert alert-error" role="alert" hidden>
+        <p id="error-text"></p>
+        <button type="button" class="btn" onclick="location.reload()">Retry Connection</button>
+      </div>
+
+      <div class="table-container" id="table-wrapper">
+        <table id="users" hidden>
+          <thead>
+            <tr>
+              <th scope="col">User Account</th>
+              <th scope="col">Role</th>
+              <th scope="col">Status</th>
+              <th scope="col">RAM (Used/Quota)</th>
+              <th scope="col">CPU (Used/Quota)</th>
+              <th scope="col">Disk (Used/Quota)</th>
+              <th scope="col" style="text-align: right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="users-body"></tbody>
+        </table>
+      </div>
+
       <div id="form-mount" hidden></div>
+
+      <!-- User Management Modal Mount Point -->
+      <div id="modal-mount"></div>
     </main>
 
     <script>
       import { createElement } from "react";
       import { createRoot, type Root } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
+      import { syncSession } from "../../lib/session";
       import InviteUserForm from "../../components/InviteUserForm";
-      import UserAccountEditor from "../../components/UserAccountEditor";
-      import UserQuotaEditor from "../../components/UserQuotaEditor";
-      import AssignmentToggle, {
-        type AssignmentState,
-      } from "../../components/AssignmentToggle";
+      import UserManageModal, { type UserRecord } from "../../components/UserManageModal";
 
-      /**
-       * What a user's containers currently add up to, summed from the DB-cached
-       * limits by compute_user_allocation(). The list endpoint attaches it to
-       * every row so a quota can be shown as "used of allowed" rather than as a
-       * ceiling with no context.
-       */
       interface Allocation {
         ram_mb: number;
         cpu: number;
         disk_gb: number;
       }
 
-      /** One row of GET /api/users: the users table columns plus `allocation`. */
       interface UserRecord {
         id: string;
         email: string;
@@ -97,11 +102,6 @@ import SiteHeader from "../../components/SiteHeader.astro";
         users: UserRecord[];
       }
 
-      /**
-       * Only the two fields the assignment toggles need. GET /api/containers
-       * returns much more, but naming just these keeps it obvious that this
-       * page does not care about live LXD state.
-       */
       interface ContainerRecord {
         id: string;
         lxd_name: string;
@@ -117,27 +117,15 @@ import SiteHeader from "../../components/SiteHeader.astro";
       const tbody = document.getElementById("users-body") as HTMLElement;
       const formMount = document.getElementById("form-mount") as HTMLElement;
 
-      /**
-       * Everything the page has to remember between repaints.
-       *
-       * `assignmentStates` is the important one. No endpoint reports which
-       * containers a given user holds, so the only source of that truth is the
-       * answers the grant/revoke calls give back. Keeping them here — rather
-       * than inside each toggle — means a repaint does not throw away what the
-       * server already told us. Keys are `${userId}:${containerId}`.
-       */
-      const assignmentStates = new Map<string, AssignmentState>();
-      /** Live React roots, so a full repaint can unmount them instead of leaking. */
+      const assignmentStates = new Map<string, "unknown" | "granted" | "revoked">();
       let mountedRoots: Root[] = [];
-      /** The three quota cells per user id, for updating figures in place. */
+      let modalRoot: Root | null = null;
       const quotaCells = new Map<string, HTMLTableCellElement[]>();
-      /** Which user's manage panel is open; only one at a time. */
-      let expandedUserId: string | null = null;
-      /** Last data drawn, so a repaint can be triggered without re-fetching. */
       let latestUsers: UserRecord[] = [];
       let allContainers: ContainerRecord[] = [];
 
-      /** Show a message in the error slot and hide the spinner. */
+      const modalMount = document.getElementById("modal-mount") as HTMLElement;
+
       function fail(message: string): void {
         loading.hidden = true;
         table.hidden = true;
@@ -145,627 +133,384 @@ import SiteHeader from "../../components/SiteHeader.astro";
         errorEl.hidden = false;
       }
 
-      /** Drop trailing zeros so a CPU quota of 2.0 reads "2" and 1.5 stays "1.5". */
       function formatNumber(value: number): string {
         return String(Number(value.toFixed(2)));
       }
 
-      /**
-       * Render one resource as "used / quota", or "used of unlimited".
-       *
-       * The zero case is not cosmetic. backend/lxd/quota.py skips the check
-       * entirely for a resource whose quota is 0, so a bare "0" in this column
-       * would tell the admin the exact opposite of what the number means —
-       * "no allowance" instead of "no ceiling".
-       */
       function formatQuota(used: number, quota: number, unit: string): string {
         return quota === 0
-          ? `${formatNumber(used)} ${unit} / unlimited`
+          ? `${formatNumber(used)} ${unit} / ∞`
           : `${formatNumber(used)} / ${formatNumber(quota)} ${unit}`;
       }
 
-      /** Composite key for `assignmentStates`. */
-      function assignmentKey(userId: string, containerId: string): string {
-        return `${userId}:${containerId}`;
+      function closeManageModal(): void {
+        if (modalRoot) {
+          modalRoot.unmount();
+          modalRoot = null;
+        }
+        modalMount.replaceChildren();
+        document.body.style.overflow = "";
       }
 
-      /**
-       * Build the expanded panel for one user: the quota editor, then one
-       * toggle per container on the host.
-       *
-       * Islands are mounted imperatively because both sets depend on data that
-       * only exists at runtime — Astro's `client:*` directives resolve at build
-       * time, when neither the user nor the container list is known.
-       */
-      function renderManagePanel(user: UserRecord): HTMLTableRowElement {
-        const row = document.createElement("tr");
-        row.className = "manage-row";
-
-        const cell = document.createElement("td");
-        // Spans every column so the panel reads as belonging to the row above
-        // rather than to one column of it.
-        cell.colSpan = 7;
-        row.appendChild(cell);
-
-        const accountHeading = document.createElement("h3");
-        accountHeading.textContent = `Account access — ${user.email}`;
-        cell.appendChild(accountHeading);
-
-        const accountMount = document.createElement("div");
-        cell.appendChild(accountMount);
-        const accountRoot = createRoot(accountMount);
-        mountedRoots.push(accountRoot);
-        accountRoot.render(
-          createElement(UserAccountEditor, {
-            userId: user.id,
-            email: user.email,
-            role: user.role,
-            status: user.status as "invited" | "active" | "revoked",
-            onSaved: refreshUsers,
+      function openManageModal(user: UserRecord): void {
+        closeManageModal();
+        modalRoot = createRoot(modalMount);
+        modalRoot.render(
+          createElement(UserManageModal, {
+            user,
+            allContainers,
+            assignmentStates,
+            onClose: closeManageModal,
+            onUserUpdated: async () => {
+              await refreshUsers();
+              const updated = latestUsers.find((u) => u.id === user.id);
+              if (updated) openManageModal(updated);
+            },
           }),
         );
-
-        const quotaHeading = document.createElement("h3");
-        quotaHeading.textContent = `Quota — ${user.email}`;
-        cell.appendChild(quotaHeading);
-
-        const quotaMount = document.createElement("div");
-        cell.appendChild(quotaMount);
-        const quotaRoot = createRoot(quotaMount);
-        mountedRoots.push(quotaRoot);
-        quotaRoot.render(
-          createElement(UserQuotaEditor, {
-            userId: user.id,
-            quotaRamMb: user.quota_ram_mb,
-            quotaCpu: user.quota_cpu,
-            quotaDiskGb: user.quota_disk_gb,
-            allocation: user.allocation,
-            onSaved: refreshUsers,
-          }),
-        );
-
-        const accessHeading = document.createElement("h3");
-        accessHeading.textContent = "Container access";
-        cell.appendChild(accessHeading);
-
-        if (allContainers.length === 0) {
-          // Without this the heading would sit above nothing at all, which
-          // reads as a failed render rather than an empty host.
-          const note = document.createElement("p");
-          note.className = "hint";
-          note.textContent = "No containers exist yet, so there is nothing to assign.";
-          cell.appendChild(note);
-          return row;
-        }
-
-        const note = document.createElement("p");
-        note.className = "hint";
-        // Says out loud what the toggles cannot show, so "Not known" does not
-        // look like a bug. Also names the soft-revoke behaviour, since
-        // "Revoke" otherwise reads like it might destroy the container.
-        note.textContent =
-          "The API has no endpoint listing one user's containers, so access starts as \"Not known\" and is confirmed by the server on first use. Revoking frees quota and leaves the container running.";
-        cell.appendChild(note);
-
-        const list = document.createElement("ul");
-        list.className = "assignments";
-        cell.appendChild(list);
-
-        for (const container of allContainers) {
-          const item = document.createElement("li");
-          list.appendChild(item);
-
-          const key = assignmentKey(user.id, container.id);
-          const root = createRoot(item);
-          mountedRoots.push(root);
-          root.render(
-            createElement(AssignmentToggle, {
-              userId: user.id,
-              containerId: container.id,
-              containerName: container.lxd_name,
-              initialState: assignmentStates.get(key) ?? "unknown",
-              // A real grant or revoke moves the user's allocation, so the
-              // quota figures above are now stale and worth re-reading. A 409
-              // or 404 moved nothing, so it only updates what we know.
-              onResolved: (state: AssignmentState, changed: boolean) => {
-                assignmentStates.set(key, state);
-                if (changed) void refreshUsers();
-              },
-            }),
-          );
-        }
-
-        return row;
+        document.body.style.overflow = "hidden";
       }
 
-      /**
-       * Draw one table row per user, plus the manage panel for whichever row is
-       * open.
-       *
-       * Replaces the body rather than appending, so calling this again after an
-       * invite does not duplicate every existing row. Any islands from the
-       * previous pass are unmounted first: their DOM is about to be discarded,
-       * and a root left pointing at detached nodes keeps rendering into nothing.
-       */
-      function renderUsers(users: UserRecord[]): void {
+      function updateQuotaCellsInPlace(user: UserRecord): void {
+        const cells = quotaCells.get(user.id);
+        if (!cells) return;
+        cells[0].textContent = formatQuota(user.allocation.ram_mb, user.quota_ram_mb, "MB");
+        cells[1].textContent = formatQuota(user.allocation.cpu, user.quota_cpu, "cores");
+        cells[2].textContent = formatQuota(user.allocation.disk_gb, user.quota_disk_gb, "GB");
+      }
+
+      function renderTable(users: UserRecord[]): void {
         for (const root of mountedRoots) root.unmount();
         mountedRoots = [];
         quotaCells.clear();
         tbody.replaceChildren();
-        latestUsers = users;
 
         for (const user of users) {
           const row = document.createElement("tr");
-          // Drives the status styling below, so "invited" reads differently
-          // from "active" without keeping a second copy of the status in a
-          // CSS class that could drift from the value shown in the cell.
           row.dataset.status = user.status;
+          row.dataset.userId = user.id;
 
-          const cells = [
-            user.email,
-            user.role,
-            // Printed verbatim rather than prettified: 'invited' / 'active' /
-            // 'revoked' are the literal values the API stores, and an admin
-            // reading this table is the person who will match them against a
-            // curl response or the audit log.
-            user.status,
-            formatQuota(user.allocation.ram_mb, user.quota_ram_mb, "MB"),
-            formatQuota(user.allocation.cpu, user.quota_cpu, "cores"),
-            formatQuota(user.allocation.disk_gb, user.quota_disk_gb, "GB"),
-          ];
+          const emailCell = document.createElement("td");
+          emailCell.className = "user-email-cell";
+          emailCell.innerHTML = `
+            <div class="user-cell-wrap">
+              <span class="user-icon">👤</span>
+              <span class="email-name">${user.email}</span>
+            </div>
+          `;
 
-          const rendered: HTMLTableCellElement[] = [];
-          for (const value of cells) {
-            const cell = document.createElement("td");
-            // textContent, never innerHTML: the email originates with a third
-            // party (Google) and passes through our database, so rendering it
-            // as markup would make it an injection vector.
-            cell.textContent = value;
-            row.appendChild(cell);
-            rendered.push(cell);
-          }
-          // Only the three quota cells are kept, so a refresh can rewrite the
-          // figures without discarding the panel and its islands.
-          quotaCells.set(user.id, rendered.slice(3));
+          const roleCell = document.createElement("td");
+          roleCell.innerHTML = `<span class="role-pill ${user.role}">${user.role}</span>`;
+
+          const statusCell = document.createElement("td");
+          const normStatus = user.status.toLowerCase();
+          const badgeClass = normStatus === "active" ? "running" : normStatus === "invited" ? "frozen" : "stopped";
+          statusCell.innerHTML = `<span class="status-badge ${badgeClass}">${user.status}</span>`;
+
+          const ramCell = document.createElement("td");
+          ramCell.className = "mono";
+          ramCell.textContent = formatQuota(user.allocation.ram_mb, user.quota_ram_mb, "MB");
+
+          const cpuCell = document.createElement("td");
+          cpuCell.className = "mono";
+          cpuCell.textContent = formatQuota(user.allocation.cpu, user.quota_cpu, "cores");
+
+          const diskCell = document.createElement("td");
+          diskCell.className = "mono";
+          diskCell.textContent = formatQuota(user.allocation.disk_gb, user.quota_disk_gb, "GB");
+
+          quotaCells.set(user.id, [ramCell, cpuCell, diskCell]);
 
           const manageCell = document.createElement("td");
-          const manageButton = document.createElement("button");
-          manageButton.type = "button";
-          const open = expandedUserId === user.id;
-          manageButton.textContent = open ? "Close" : "Manage";
-          // aria-expanded so the button announces the panel it controls rather
-          // than reading as a plain action.
-          manageButton.setAttribute("aria-expanded", String(open));
-          manageButton.addEventListener("click", () => {
-            // One panel at a time: opening another closes this one. Two open
-            // quota forms for different users invite editing the wrong row.
-            expandedUserId = open ? null : user.id;
-            renderUsers(latestUsers);
+          manageCell.style.textAlign = "right";
+          const manageBtn = document.createElement("button");
+          manageBtn.type = "button";
+          manageBtn.className = "btn btn-sm";
+          manageBtn.textContent = "Manage";
+          manageBtn.setAttribute("aria-haspopup", "dialog");
+
+          manageBtn.addEventListener("click", () => {
+            openManageModal(user);
           });
-          manageCell.appendChild(manageButton);
-          row.appendChild(manageCell);
 
+          manageCell.appendChild(manageBtn);
+
+          row.append(emailCell, roleCell, statusCell, ramCell, cpuCell, diskCell, manageCell);
           tbody.appendChild(row);
-
-          if (open) tbody.appendChild(renderManagePanel(user));
         }
       }
 
-      /**
-       * Rewrite the quota figures in place for users already on screen.
-       *
-       * Used instead of a full repaint after a quota save or an assignment
-       * change, because a repaint would unmount the panel the admin is working
-       * in — losing the editor's "Quota saved." confirmation and every toggle's
-       * hard-won state mid-task.
-       */
-      function updateQuotaCells(users: UserRecord[]): void {
-        latestUsers = users;
-
-        for (const user of users) {
-          const cells = quotaCells.get(user.id);
-          if (!cells) continue;
-
-          cells[0].textContent = formatQuota(user.allocation.ram_mb, user.quota_ram_mb, "MB");
-          cells[1].textContent = formatQuota(user.allocation.cpu, user.quota_cpu, "cores");
-          cells[2].textContent = formatQuota(user.allocation.disk_gb, user.quota_disk_gb, "GB");
-        }
-      }
-
-      /**
-       * Re-fetch the user list and show the new figures.
-       *
-       * Serves both the invite form and the manage panel, which need different
-       * things: an invite adds a row, so the table has to be rebuilt, while a
-       * quota save or an assignment change only moves numbers on rows that are
-       * already drawn. Comparing the id sets tells the two apart, so the
-       * common case leaves the open panel alone.
-       */
       async function refreshUsers(): Promise<void> {
         try {
           const list = await apiFetch<UserListResponse>("/api/users");
-
-          const drawn = new Set(quotaCells.keys());
-          const sameUsers =
-            list.users.length === drawn.size &&
-            list.users.every((user) => drawn.has(user.id));
-
-          if (sameUsers) updateQuotaCells(list.users);
-          else renderUsers(list.users);
+          latestUsers = list.users;
+          for (const u of list.users) updateQuotaCellsInPlace(u);
+          renderTable(latestUsers);
         } catch {
-          // The change itself succeeded — only the refresh failed, and the
-          // form or toggle has already reported its own success. Replacing the
-          // page with an error here would contradict it.
+          // Keep existing list on failure
         }
       }
 
-      try {
-        // No separate /api/auth/me call: the user list is admin-only, so its
-        // own answer *is* the role check. Asking /me first would be a second
-        // source of the same truth and a second round trip, and the two could
-        // disagree if the caller's role changed between them.
-        //
-        // The container list is fetched alongside it rather than when a panel
-        // opens: it is the same list for every user, so fetching it once here
-        // beats re-fetching it on each expand.
-        const [users, containers] = await Promise.all([
-          apiFetch<UserListResponse>("/api/users"),
-          apiFetch<ContainerListResponse>("/api/containers"),
-        ]);
+      let initialized = false;
 
-        allContainers = containers.containers;
+      async function loadAdminData(): Promise<void> {
+        try {
+          const [userList, containerList] = await Promise.all([
+            apiFetch<UserListResponse>("/api/users"),
+            apiFetch<ContainerListResponse>("/api/containers"),
+          ]);
 
-        loading.hidden = true;
-        table.hidden = false;
-        renderUsers(users.users);
+          loading.hidden = true;
+          latestUsers = userList.users;
+          allContainers = containerList.containers;
 
-        formMount.hidden = false;
-        // Not tracked in `mountedRoots`: the invite form outlives every table
-        // repaint, so it must not be unmounted with the rows.
-        createRoot(formMount).render(
-          createElement(InviteUserForm, { onInvited: refreshUsers }),
-        );
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          // No session. `replace` keeps this page out of history, so Back does
-          // not return the user to a page that will bounce them again.
+          table.hidden = false;
+          renderTable(latestUsers);
+
+          if (!initialized) {
+            initialized = true;
+            formMount.hidden = false;
+            createRoot(formMount).render(
+              createElement(InviteUserForm, {
+                onInvited: refreshUsers,
+              }),
+            );
+          }
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            window.location.replace("/login");
+          } else if (err instanceof ApiError) {
+            fail(`Could not load users (${err.status}): ${err.message}`);
+          } else {
+            fail("Could not reach the server to load users.");
+          }
+        }
+      }
+
+      void syncSession({
+        onSuccess(user) {
+          if (user.role !== "admin") {
+            fail("This page is for administrators. Return to the dashboard.");
+            return;
+          }
+          void loadAdminData();
+        },
+        onUnauthorized() {
           window.location.replace("/login");
-        } else if (err instanceof ApiError && err.status === 403) {
-          // Only GET /api/users is admin-only — the container list is scoped
-          // rather than refused — so a 403 here can only mean the caller is a
-          // signed-in non-admin. Saying that plainly beats echoing the API's
-          // wording, which does not explain that the whole page is off-limits
-          // rather than one control.
-          fail("This page is for administrators. Return to the dashboard.");
-        } else if (err instanceof ApiError) {
-          fail(`Could not load this page (${err.status}): ${err.message}`);
-        } else {
-          fail("Could not reach the server to load this page.");
-        }
-      }
+        },
+        onError(err) {
+          fail("Could not reach the server to load session.");
+        },
+      });
     </script>
 
     <style>
-      main {
-        font-family: system-ui, sans-serif;
-        max-width: 60rem;
-        margin: 2rem auto;
-        padding: 0 1rem;
+      .page-title-row {
+        margin-bottom: 2rem;
       }
 
-      #error {
-        color: #a12;
-      }
-      #error p { margin: 0 0 0.5rem; }
-      #error button {
-        font: inherit;
-        font-size: 0.85rem;
-        padding: 0.3rem 0.9rem;
-        border: 1px solid #a12;
-        border-radius: 4px;
-        background: #fff;
-        color: #a12;
-        cursor: pointer;
-      }
-      #error button:hover { background: #fef0f0; }
-
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.9rem;
-      }
-
-      th,
-      td {
-        text-align: left;
-        padding: 0.45rem 0.6rem;
-        border-bottom: 1px solid #e0e0e0;
-      }
-
-      th {
-        font-size: 0.8rem;
-        color: #555;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-      }
-
-      /* Quota figures line up column-wise so they can be compared by eye. The
-         upper bound excludes the Manage column, which holds a button. */
-      td:nth-child(n + 4):nth-child(-n + 6) {
-        font-variant-numeric: tabular-nums;
-      }
-
-      td:last-child button {
-        font: inherit;
-        font-size: 0.85rem;
-        padding: 0.2rem 0.7rem;
-        cursor: pointer;
-      }
-
-      /* An invited user has not signed in yet and a revoked one can no longer
-         sign in, so neither is a live account — muting both keeps the rows
-         that matter visually first. */
-      tr[data-status="invited"] td,
-      tr[data-status="revoked"] td {
-        color: #777;
-      }
-
-      /* The expanded panel is tinted and inset so it reads as detail belonging
-         to the row above rather than as another user. */
-      .manage-row > td {
-        background: #fafafa;
-        padding: 1rem 1.2rem 1.2rem;
-      }
-
-      .manage-row h3 {
-        margin: 1.4rem 0 0.7rem;
+      .subtitle {
+        color: var(--text-secondary);
         font-size: 0.95rem;
-        overflow-wrap: anywhere;
+        margin-top: -1rem;
       }
 
-      .manage-row h3:first-child {
+      .table-container {
+        margin-bottom: 3rem;
+      }
+
+      .user-cell-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+      }
+
+      .user-icon {
+        font-size: 1rem;
+      }
+
+      .email-name {
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .role-pill {
+        display: inline-block;
+        padding: 0.15rem 0.55rem;
+        border-radius: var(--radius-full);
+        font-size: 0.725rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .role-pill.admin {
+        background: rgba(2, 132, 199, 0.12);
+        color: var(--accent-cyan);
+        border: 1px solid rgba(2, 132, 199, 0.3);
+      }
+
+      .role-pill.user {
+        background: #f1f5f9;
+        color: var(--text-secondary);
+        border: 1px solid var(--border-subtle);
+      }
+
+      .manage-row td {
+        padding: 1.5rem !important;
+        background: #f8fafc !important;
+        border-bottom: 1px solid var(--border-medium);
+      }
+
+      .manage-panel-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+        gap: 1.5rem;
+      }
+
+      .panel-box {
+        padding: 1.25rem;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+      }
+
+      .panel-box.full-width {
+        grid-column: 1 / -1;
+      }
+
+      .panel-box h4 {
         margin-top: 0;
+        margin-bottom: 0.75rem;
+        font-size: 0.95rem;
+        color: var(--text-primary);
       }
 
-      .manage-row .hint {
-        margin: 0.6rem 0 0;
-        max-width: 46rem;
-        font-size: 0.8rem;
-        color: #555;
-      }
-
-      :global(.account-editor) {
+      .assignments-grid {
         display: grid;
-        grid-template-columns: auto minmax(10rem, 18rem);
-        align-items: center;
-        gap: 0.4rem 0.7rem;
-        max-width: 34rem;
+        grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+        gap: 0.75rem;
+        margin-top: 1rem;
       }
 
-      :global(.account-editor h3),
-      :global(.account-editor .hint),
-      :global(.account-editor .error),
-      :global(.account-editor .success) {
-        grid-column: 1 / -1;
-      }
-
-      :global(.account-editor label) {
-        font-size: 0.85rem;
-        font-weight: 600;
-      }
-
-      :global(.account-editor select) {
-        font: inherit;
-        width: 12rem;
-        padding: 0.3rem 0.4rem;
-      }
-
-      :global(.account-editor button) {
-        font: inherit;
-        justify-self: start;
-        margin-top: 0.6rem;
-        padding: 0.4rem 0.9rem;
-        cursor: pointer;
-      }
-
-      :global(.account-editor .danger) {
-        border: 1px solid #a12;
-        color: #a12;
-        background: #fff;
-      }
-
-      :global(.account-editor .hint) {
-        margin: 0;
-        font-size: 0.8rem;
-        color: #555;
-      }
-
-      :global(.account-editor .error) {
-        margin: 0.3rem 0 0;
-        color: #a12;
-        font-size: 0.9rem;
-      }
-
-      :global(.account-editor .success) {
-        margin: 0.3rem 0 0;
-        color: #161;
-        font-size: 0.9rem;
-      }
-
-      .assignments {
-        display: grid;
-        gap: 0.5rem;
-        margin: 0.7rem 0 0;
-        padding: 0;
-        list-style: none;
-      }
-
-      /* Component internals are styled here rather than in the .tsx files,
-         matching the convention the other pages follow: components render
-         plain semantic markup and carry no styles of their own. */
-      :global(.quota-editor) {
-        display: grid;
-        grid-template-columns: auto auto 1fr;
-        align-items: center;
-        gap: 0.4rem 0.7rem;
-        max-width: 34rem;
-      }
-
-      :global(.quota-editor label) {
-        font-size: 0.85rem;
-        font-weight: 600;
-      }
-
-      :global(.quota-editor input) {
-        font: inherit;
-        width: 7rem;
-        padding: 0.3rem 0.4rem;
-      }
-
-      :global(.quota-editor .used) {
-        font-size: 0.85rem;
-        color: #555;
-        font-variant-numeric: tabular-nums;
-      }
-
-      /* The three labelled fields own the grid columns; everything else spans
-         the full width so it is not squeezed into the label column. */
-      :global(.quota-editor button),
-      :global(.quota-editor .hint),
-      :global(.quota-editor .error),
-      :global(.quota-editor .success) {
-        grid-column: 1 / -1;
-      }
-
-      :global(.quota-editor button) {
-        font: inherit;
-        justify-self: start;
-        margin-top: 0.6rem;
-        padding: 0.4rem 0.9rem;
-        cursor: pointer;
-      }
-
-      :global(.quota-editor .hint) {
-        margin: 0;
-        font-size: 0.8rem;
-        color: #555;
-      }
-
-      /* Amber, not red: dropping a quota below current use is allowed and
-         sometimes intended, so it is a warning rather than an error. */
-      :global(.quota-editor .hint.warn) {
-        color: #8a5a00;
-      }
-
-      :global(.quota-editor .error) {
-        margin: 0.3rem 0 0;
-        color: #a12;
-        font-size: 0.9rem;
-      }
-
-      :global(.quota-editor .success) {
-        margin: 0.3rem 0 0;
-        color: #161;
-        font-size: 0.9rem;
-      }
-
-      :global(.assignment-toggle) {
+      :global(.assignment-item) {
         display: flex;
-        flex-wrap: wrap;
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.85rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+        transition: all var(--transition-fast);
+      }
+
+      :global(.assignment-item.granted) {
+        border-color: rgba(16, 185, 129, 0.3);
+      }
+
+      :global(.item-info) {
+        display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: 0.5rem;
       }
 
-      :global(.assignment-toggle .name) {
-        min-width: 12rem;
-        font-size: 0.9rem;
+      :global(.container-name-text) {
         font-weight: 600;
-        overflow-wrap: anywhere;
-      }
-
-      :global(.assignment-toggle .state) {
-        min-width: 6rem;
-        font-size: 0.8rem;
-        color: #555;
-      }
-
-      :global(.assignment-toggle[data-state="granted"] .state) {
-        color: #161;
-      }
-
-      :global(.assignment-toggle button) {
-        font: inherit;
         font-size: 0.85rem;
-        padding: 0.25rem 0.7rem;
-        cursor: pointer;
+        color: var(--text-primary);
       }
 
-      /* Messages break onto their own line: the quota rejection is a full
-         sentence of arithmetic and would otherwise stretch the row. */
-      :global(.assignment-toggle .error),
-      :global(.assignment-toggle .notice) {
-        flex-basis: 100%;
-        margin: 0;
-        font-size: 0.85rem;
+      :global(.item-controls) {
+        display: flex;
+        gap: 0.5rem;
       }
 
-      :global(.assignment-toggle .error) {
-        color: #a12;
+      :global(.btn-sm) {
+        padding: 0.25rem 0.65rem;
+        font-size: 0.775rem;
       }
 
-      :global(.assignment-toggle .notice) {
-        color: #161;
+      :global(.active-grant) {
+        background: rgba(16, 185, 129, 0.2) !important;
+        color: #6ee7b7 !important;
+        border-color: #10b981 !important;
       }
 
-      :global(.invite-form) {
+      :global(.active-revoke) {
+        background: rgba(244, 63, 94, 0.2) !important;
+        color: #fca5a5 !important;
+        border-color: #f43f5e !important;
+      }
+
+      :global(.toggle-notice) {
+        font-size: 0.725rem;
+        color: var(--accent-cyan);
+      }
+
+      :global(.toggle-error) {
+        font-size: 0.725rem;
+        color: #f43f5e;
+      }
+
+      /* Invite User Form Styles */
+      :global(.invite-form-section) {
+        margin-top: 2rem;
+      }
+
+      :global(.quota-inputs-panel) {
+        margin: 1.25rem 0;
+        padding: 1.25rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+      }
+
+      :global(.quota-inputs-panel h3) {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        font-size: 0.875rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--text-secondary);
+      }
+
+      :global(.quota-fields-row) {
         display: grid;
-        gap: 0.35rem;
-        margin-top: 2.5rem;
-        padding-top: 1.5rem;
-        border-top: 1px solid #d0d0d0;
-        max-width: 28rem;
+        grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+        gap: 1rem;
       }
 
-      :global(.invite-form h2) {
-        margin: 0 0 0.5rem;
-        font-size: 1.1rem;
+      /* Account & Quota Editors */
+      :global(.account-editor-panel),
+      :global(.quota-editor-panel) {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
       }
 
-      :global(.invite-form label) {
-        font-size: 0.9rem;
-        font-weight: 600;
+      :global(.account-editor-panel h4),
+      :global(.quota-editor-panel h4) {
+        margin: 0;
+        font-size: 0.95rem;
+      }
+
+      :global(.editor-fields) {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+
+      :global(.editor-actions) {
+        display: flex;
+        gap: 0.75rem;
         margin-top: 0.5rem;
       }
 
-      :global(.invite-form input),
-      :global(.invite-form select) {
-        font: inherit;
-        padding: 0.35rem 0.5rem;
-      }
-
-      :global(.invite-form button) {
-        font: inherit;
-        margin-top: 1rem;
-        padding: 0.5rem 1rem;
-        cursor: pointer;
-      }
-
-      :global(.invite-form .hint) {
-        margin: 0;
-        font-size: 0.8rem;
-        color: #555;
-      }
-
-      :global(.invite-form .error) {
-        margin: 0.5rem 0 0;
-        color: #a12;
-        font-size: 0.9rem;
-      }
-
-      :global(.invite-form .success) {
-        margin: 0.5rem 0 0;
-        color: #161;
-        font-size: 0.9rem;
+      :global(.quota-editor-grid) {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+        gap: 0.85rem;
       }
     </style>
   </body>
