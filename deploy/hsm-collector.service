@@ -1,0 +1,17 @@
+[Unit]
+Description=Hobby Server Monitor Background Collector
+After=network.target lxd.service
+
+[Service]
+# Dedicated low-privilege OS user belonging to lxd group (decision 7.4)
+User=hsm-runner
+Group=lxd
+WorkingDirectory=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara
+EnvironmentFile=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara/backend/.env
+
+# Run the independent collector loop
+ExecStart=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara/.venv/bin/python -m backend.collector.collector
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
