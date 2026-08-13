@@ -11,6 +11,12 @@ import "../styles/global.css";
     <title>Dashboard · Server Monitor</title>
     <script is:inline>
       try {
+        if (window.opener && window.name === "google_oauth_popup") {
+          try {
+            window.opener.postMessage({ type: "OAUTH_SUCCESS" }, window.location.origin);
+          } catch (e) {}
+          window.close();
+        }
         if (sessionStorage.getItem("hsm_frontend_session")) {
           document.documentElement.classList.add("session-cached");
         }

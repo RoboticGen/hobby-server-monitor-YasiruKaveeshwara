@@ -36,17 +36,12 @@ export default function LogoutButton() {
 
 		try {
 			await apiFetch<LogoutResponse>("/api/auth/logout", { method: "POST" });
+		} catch (err) {
+			// Even if server returns 401 (already expired) or network error,
+			// always clear local session and navigate to /login.
+		} finally {
 			clearCachedSession();
 			window.location.assign("/login");
-		} catch (err) {
-			// Failing to reach the backend means the session may still be live, so
-			// the user is told rather than being sent to /login as if it worked.
-			setError(
-				err instanceof ApiError ?
-					`Sign out failed (${err.status}): ${err.message}`
-				:	"Sign out failed: could not reach the server.",
-			);
-			setPending(false);
 		}
 	}
 

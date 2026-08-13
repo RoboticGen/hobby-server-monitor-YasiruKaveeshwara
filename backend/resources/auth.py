@@ -80,8 +80,8 @@ def _set_session_cookies(
 
 def _clear_session_cookies(resp: falcon.Response) -> None:
     """Remove both session cookies by setting them to expire immediately."""
-    resp.unset_cookie(_ACCESS_COOKIE, same_site="Lax")
-    resp.unset_cookie(_REFRESH_COOKIE, same_site="Lax")
+    resp.unset_cookie(_ACCESS_COOKIE, path="/", same_site="Lax")
+    resp.unset_cookie(_REFRESH_COOKIE, path="/", same_site="Lax")
 
 
 class GoogleLoginResource:
@@ -312,6 +312,10 @@ class LogoutResource:
             session = repo.get_session_by_hash(refresh_hash)
             if session:
                 repo.delete_session(session["id"])
+
+        user_ctx = getattr(req.context, "user", None)
+        if user_ctx and user_ctx.get("id"):
+            repo.delete_sessions_for_user(user_ctx["id"])
 
         _clear_session_cookies(resp)
         resp.media = {"message": "Logged out successfully"}
