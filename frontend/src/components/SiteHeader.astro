@@ -69,7 +69,7 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
           <span id="header-email" class="email"></span>
           <span id="header-role" class="role"></span>
         </div>
-        <LogoutButton client:load />
+        <LogoutButton client:idle />
       </div>
 
       <a id="header-signin" class="signin" href="/login" hidden>Sign in</a>
@@ -79,7 +79,7 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
   </div>
 </header>
 
-<StatusBanner client:load />
+<StatusBanner client:idle />
 
 <script is:inline>
   (function () {

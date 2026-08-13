@@ -134,21 +134,19 @@ class ContainerListResource:
         user_id = req.context.user["id"]
         role = req.context.user["role"]
 
+        import concurrent.futures
+
         if role == "admin":
             # Admins see every active container
             containers = repo.list_active_containers()
         else:
             # Regular users see only their assigned containers
-            assignments = repo.list_assignments_for_user(user_id)
-            containers = []
-            for assignment in assignments:
-                container = repo.get_container_by_id(assignment["container_id"])
-                # Only include active (not soft-deleted) containers
-                if container and container["deleted_at"] is None:
-                    containers.append(container)
+            containers = repo.list_assigned_active_containers(user_id)
 
-        # Enrich each DB record with live LXD state (status, config)
-        enriched = [_enrich_with_lxd_state(c) for c in containers]
+        # Enrich each DB record with live LXD state (status, config) concurrently
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            enriched = list(executor.map(_enrich_with_lxd_state, containers))
+
         resp.media = {"containers": enriched}
 
     def on_post(self, req: falcon.Request, resp: falcon.Response) -> None:
