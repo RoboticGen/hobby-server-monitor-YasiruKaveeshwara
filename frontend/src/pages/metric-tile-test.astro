@@ -1,0 +1,57 @@
+---
+// THROWAWAY test page for Step 17.1, referenced by that step's test only.
+// The real dashboard is Step 17.2 (admin/index.astro); delete this file once
+// that page exists and exercises MetricTile properly.
+//
+// The container id is taken from the query string (?container=<uuid>) so this
+// page needs no hardcoded fixture and no backend call of its own — pass a real
+// id from `GET /api/containers` when testing.
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>MetricTile test</title>
+  </head>
+  <body>
+    <h1>MetricTile test</h1>
+    <p>
+      Append <code>?container=&lt;container-uuid&gt;</code> to this URL, then
+      watch the numbers change every 10 seconds.
+    </p>
+
+    <!--
+      Mounted client-side because the container id comes from the URL, which
+      does not exist at build time under Astro's static output.
+    -->
+    <div id="mount"></div>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import MetricTile from "../components/MetricTile";
+
+      const containerId = new URLSearchParams(location.search).get("container");
+      const mount = document.getElementById("mount");
+
+      if (!mount) {
+        throw new Error("mount point missing");
+      } else if (!containerId) {
+        mount.textContent = "No ?container= id supplied.";
+      } else {
+        // Allocated figures are placeholders here; this page only exists to
+        // prove the polling loop updates. Real values come from the dashboard.
+        createRoot(mount).render(
+          createElement(MetricTile, {
+            containerId,
+            name: containerId,
+            state: "Unknown",
+            ramAllocatedMb: 1024,
+            diskAllocatedGb: 10,
+          }),
+        );
+      }
+    </script>
+  </body>
+</html>

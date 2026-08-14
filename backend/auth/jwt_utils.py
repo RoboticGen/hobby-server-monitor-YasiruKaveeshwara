@@ -20,10 +20,9 @@ import jwt
 
 from backend.config import config
 
-# Access tokens expire after 15 minutes. Short enough that a stolen token
-# has limited usefulness, long enough that normal browsing doesn't trigger
-# constant re-authentication.
-_ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
+# Access token lifetime is configurable via env so session duration can be
+# tuned without changing application code.
+_ACCESS_TOKEN_LIFETIME = timedelta(minutes=config.access_token_lifetime_minutes)
 
 # Algorithm used for JWT signing — HS256 is appropriate for a single-server
 # setup where the same process both signs and verifies.
@@ -55,9 +54,7 @@ def decode_access_token(token: str) -> dict | None:
     catching exceptions, keeping the auth middleware simple.
     """
     try:
-        payload = jwt.decode(
-            token, config.jwt_secret, algorithms=[_JWT_ALGORITHM]
-        )
+        payload = jwt.decode(token, config.jwt_secret, algorithms=[_JWT_ALGORITHM])
         return payload
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None

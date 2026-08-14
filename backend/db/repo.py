@@ -14,14 +14,17 @@ from datetime import datetime, timezone
 
 from backend.config import config
 
-
 # ---------------------------------------------------------------------------
 # Allowed columns for update_user — whitelisted here so that the dynamic
 # SET clause in update_user cannot be tricked into writing to arbitrary
 # columns. Only these names are accepted; anything else raises ValueError.
 # ---------------------------------------------------------------------------
 _UPDATABLE_USER_FIELDS = {
-    "role", "status", "quota_ram_mb", "quota_cpu", "quota_disk_gb",
+    "role",
+    "status",
+    "quota_ram_mb",
+    "quota_cpu",
+    "quota_disk_gb",
 }
 
 # How long a writer waits for a competing write lock before giving up.
@@ -51,9 +54,7 @@ def get_connection() -> sqlite3.Connection:
     SQLite (it defaults to OFF), otherwise REFERENCES constraints are
     silently ignored and referential integrity is not enforced.
     """
-    conn = sqlite3.connect(
-        str(config.database_path), timeout=_BUSY_TIMEOUT_SECONDS
-    )
+    conn = sqlite3.connect(str(config.database_path), timeout=_BUSY_TIMEOUT_SECONDS)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row  # allows column access by name
     return conn
@@ -169,8 +170,16 @@ def create_user(
                                quota_cpu, quota_disk_gb, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, email, role, status, quota_ram_mb, quota_cpu,
-             quota_disk_gb, _now_iso()),
+            (
+                user_id,
+                email,
+                role,
+                status,
+                quota_ram_mb,
+                quota_cpu,
+                quota_disk_gb,
+                _now_iso(),
+            ),
         )
         conn.commit()
     except sqlite3.IntegrityError as exc:
@@ -188,9 +197,7 @@ def get_user_by_email(email: str) -> dict | None:
     """Look up a user by their email address, returning None if not found."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM users WHERE email = ?", (email,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         return _row_to_dict(row)
     finally:
         conn.close()
@@ -199,9 +206,7 @@ def get_user_by_email(email: str) -> dict | None:
 def get_user_by_id(user_id: str, conn: sqlite3.Connection | None = None) -> dict | None:
     """Look up a user by their UUID, returning None if not found."""
     with _connection(conn) as db:
-        row = db.execute(
-            "SELECT * FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return _row_to_dict(row)
 
 
@@ -255,9 +260,7 @@ def update_user(user_id: str, **fields) -> None:
 # =========================== Sessions =======================================
 
 
-def create_session(
-    user_id: str, refresh_token_hash: str, expires_at: str
-) -> str:
+def create_session(user_id: str, refresh_token_hash: str, expires_at: str) -> str:
     """Insert a new session row and return its generated UUID.
 
     Stores the hashed refresh token (never the raw token) so that a
@@ -308,6 +311,16 @@ def delete_session(session_id: str) -> None:
         conn.close()
 
 
+def delete_sessions_for_user(user_id: str) -> None:
+    """Remove all session rows for a specific user ID."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # =========================== Containers =====================================
 
 
@@ -336,8 +349,16 @@ def create_container_record(
                                     created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (container_id, lxd_name, image, created_by,
-             limit_ram_mb, limit_cpu, limit_disk_gb, _now_iso()),
+            (
+                container_id,
+                lxd_name,
+                image,
+                created_by,
+                limit_ram_mb,
+                limit_cpu,
+                limit_disk_gb,
+                _now_iso(),
+            ),
         )
         conn.commit()
     except sqlite3.IntegrityError as exc:
@@ -379,8 +400,7 @@ def list_active_containers() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM containers WHERE deleted_at IS NULL "
-            "ORDER BY created_at"
+            "SELECT * FROM containers WHERE deleted_at IS NULL " "ORDER BY created_at"
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -410,9 +430,7 @@ def list_assignees(container_id: str) -> list[dict]:
         conn.close()
 
 
-def rename_container_lxd_name(
-    container_id: str, new_lxd_name: str
-) -> None:
+def rename_container_lxd_name(container_id: str, new_lxd_name: str) -> None:
     """Update the LXD-side name on an existing container record.
 
     The internal UUID stays the same, so all assignments, metrics, and

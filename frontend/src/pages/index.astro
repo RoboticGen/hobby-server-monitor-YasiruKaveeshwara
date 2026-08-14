@@ -1,0 +1,539 @@
+---
+// Landing page and container-user dashboard.
+import SiteHeader from "../components/SiteHeader.astro";
+import "../styles/global.css";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Dashboard · Server Monitor</title>
+    <script is:inline>
+      try {
+        if (window.opener && window.name === "google_oauth_popup") {
+          try {
+            window.opener.postMessage({ type: "OAUTH_SUCCESS" }, window.location.origin);
+          } catch (e) {}
+          window.close();
+        }
+        if (sessionStorage.getItem("hsm_frontend_session")) {
+          document.documentElement.classList.add("session-cached");
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <SiteHeader />
+
+    <div id="loading" class="global-loading-screen">
+      <div class="cyber-loader-card">
+        <div class="loader-icon-wrap">
+          <div class="loader-pulse-glow"></div>
+          <div class="cyber-spinner"></div>
+        </div>
+        <h2 class="loader-title">Authenticating Session</h2>
+        <p class="loader-subtitle">Verifying cryptographic authorization tokens…</p>
+      </div>
+    </div>
+
+    <main id="app" hidden>
+      <!-- Hero Welcome Card -->
+      <section class="welcome-card glass-card">
+        <div class="welcome-header">
+          <div class="user-greeting">
+            <span class="greeting-badge">Telemetry Console</span>
+            <h1>Welcome back, <span id="user-email" class="accent-text"></span></h1>
+            <p class="role-desc">Role: <strong id="user-role"></strong></p>
+          </div>
+        </div>
+
+        <!-- Personal Resource Quota Section (For non-admins or restricted users) -->
+        <div id="quota-card" class="quota-container" hidden>
+          <h3>Your Account Quotas</h3>
+          <div class="quota-grid">
+            <div class="quota-box">
+              <span class="quota-label">RAM USAGE</span>
+              <span id="quota-ram" class="quota-val mono"></span>
+            </div>
+            <div class="quota-box">
+              <span class="quota-label">CPU CORES</span>
+              <span id="quota-cpu" class="quota-val mono"></span>
+            </div>
+            <div class="quota-box">
+              <span class="quota-label">DISK STORAGE</span>
+              <span id="quota-disk" class="quota-val mono"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Admin Quick Navigation Signposts -->
+      <section id="admin-view" class="admin-signpost glass-card" hidden>
+        <div class="signpost-content">
+          <div class="signpost-info">
+            <h2>System Administration</h2>
+            <p>You have full administrative privileges to manage host containers, quotas, and user access.</p>
+          </div>
+          <div class="signpost-links">
+            <a href="/admin" class="btn btn-primary">
+              <span>Container Fleet</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12h14"></path>
+                <path d="m12 5 7 7-7 7"></path>
+              </svg>
+            </a>
+            <a href="/admin/users" class="btn">
+              <span>Users & Quotas</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12h14"></path>
+                <path d="m12 5 7 7-7 7"></path>
+              </svg>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- User Assigned Containers View -->
+      <section id="user-view" class="user-containers-section" hidden>
+        <div class="section-title-row">
+          <h2>Your Assigned Containers</h2>
+        </div>
+
+        <div id="containers-loading" class="skeleton-grid">
+          {
+            [1, 2, 3].map(() => (
+              <div class="skeleton-tile-card">
+                <div class="skeleton-header-row">
+                  <div class="skeleton-shimmer skeleton-title-box" />
+                  <div class="skeleton-shimmer skeleton-badge-box" />
+                </div>
+                <div class="skeleton-meter-group">
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 40%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 55%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 50%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                </div>
+                <div class="skeleton-shimmer skeleton-footer-box" />
+              </div>
+            ))
+          }
+        </div>
+
+        <div id="containers-error" class="alert alert-error" role="alert" hidden>
+          <p id="containers-error-text"></p>
+          <button type="button" class="btn" onclick="location.reload()">Retry</button>
+        </div>
+
+        <div id="containers-empty" class="empty-state glass-card" hidden>
+          <div class="empty-icon">🛡️</div>
+          <h3>No Assigned Containers</h3>
+          <p>No active containers are assigned to your account yet. Contact an administrator to grant container access.</p>
+        </div>
+
+        <div id="tiles" class="tiles-grid" hidden></div>
+      </section>
+    </main>
+
+    <script is:inline>
+      (function () {
+        try {
+          var raw = sessionStorage.getItem("hsm_frontend_session");
+          if (raw) {
+            var user = JSON.parse(raw);
+            if (user && user.email) {
+              var app = document.getElementById("app");
+              var loading = document.getElementById("loading");
+              var email = document.getElementById("user-email");
+              var role = document.getElementById("user-role");
+              var adminView = document.getElementById("admin-view");
+              var userView = document.getElementById("user-view");
+
+              if (email) email.textContent = user.email;
+              if (role) role.textContent = (user.role || "").toUpperCase();
+              if (loading) loading.hidden = true;
+              if (app) app.hidden = false;
+
+              if (user.role === "admin") {
+                if (adminView) adminView.hidden = false;
+              } else {
+                if (userView) userView.hidden = false;
+              }
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import { apiFetch, ApiError } from "../lib/api";
+      import { syncSession, type UserSession } from "../lib/session";
+      import MetricTile from "../components/MetricTile";
+
+      interface ContainerRecord {
+        id: string;
+        lxd_name: string;
+        image: string;
+        limit_ram_mb: number;
+        limit_cpu: number;
+        limit_disk_gb: number;
+        lxd_status: string;
+      }
+
+      interface ContainerListResponse {
+        containers: ContainerRecord[];
+      }
+
+      const app = document.getElementById("app") as HTMLElement;
+      const loading = document.getElementById("loading") as HTMLElement;
+      const adminView = document.getElementById("admin-view") as HTMLElement;
+      const userView = document.getElementById("user-view") as HTMLElement;
+      const quotaCard = document.getElementById("quota-card") as HTMLElement;
+      const quotaRam = document.getElementById("quota-ram") as HTMLElement;
+      const quotaCpu = document.getElementById("quota-cpu") as HTMLElement;
+      const quotaDisk = document.getElementById("quota-disk") as HTMLElement;
+      const listLoading = document.getElementById(
+        "containers-loading",
+      ) as HTMLElement;
+      const listError = document.getElementById(
+        "containers-error",
+      ) as HTMLElement;
+      const listEmpty = document.getElementById(
+        "containers-empty",
+      ) as HTMLElement;
+      const tiles = document.getElementById("tiles") as HTMLElement;
+
+      function renderTiles(containers: ContainerRecord[]): void {
+        tiles.replaceChildren();
+
+        for (const container of containers) {
+          const cell = document.createElement("div");
+          cell.className = "tile-cell glass-card";
+
+          const mount = document.createElement("div");
+
+          const footer = document.createElement("div");
+          footer.className = "tile-footer";
+
+          const link = document.createElement("a");
+          link.href = `/containers/view/?container=${encodeURIComponent(container.id)}`;
+          link.className = "detail-action-link";
+          link.innerHTML = `
+            <span>History & Terminal</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M5 12h14"></path>
+              <path d="m12 5 7 7-7 7"></path>
+            </svg>
+          `;
+          link.setAttribute(
+            "aria-label",
+            `History and terminal for ${container.lxd_name}`,
+          );
+
+          footer.appendChild(link);
+          cell.append(mount, footer);
+          tiles.appendChild(cell);
+
+          createRoot(mount).render(
+            createElement(MetricTile, {
+              containerId: container.id,
+              name: container.lxd_name,
+              state: container.lxd_status,
+              ramAllocatedMb: container.limit_ram_mb,
+              diskAllocatedGb: container.limit_disk_gb,
+            }),
+          );
+        }
+      }
+
+      function formatQuota(used: number, quota: number, unit: string): string {
+        if (quota <= 0) {
+          return `${used.toFixed(1)} ${unit} / unlimited`;
+        }
+        const pct = ((used / quota) * 100).toFixed(0);
+        return `${used.toFixed(1)} / ${quota.toFixed(1)} ${unit} (${pct}%)`;
+      }
+
+      async function loadMyContainers(): Promise<void> {
+        try {
+          const list =
+            await apiFetch<ContainerListResponse>("/api/containers");
+
+          listLoading.hidden = true;
+
+          if (list.containers.length === 0) {
+            listEmpty.hidden = false;
+          } else {
+            tiles.hidden = false;
+            renderTiles(list.containers);
+          }
+        } catch (err) {
+          listLoading.hidden = true;
+          (document.getElementById("containers-error-text") as HTMLElement).textContent =
+            err instanceof ApiError
+              ? `Could not load your containers (${err.status}): ${err.message}`
+              : "Could not reach the server to load your containers.";
+          listError.hidden = false;
+        }
+      }
+
+      function renderDashboard(user: UserSession): void {
+        loading.hidden = true;
+        (document.getElementById("user-email") as HTMLElement).textContent =
+          user.email;
+        (document.getElementById("user-role") as HTMLElement).textContent =
+          user.role.toUpperCase();
+
+        if (user.role === "admin") {
+          adminView.hidden = false;
+          userView.hidden = true;
+          quotaCard.hidden = true;
+        } else {
+          adminView.hidden = true;
+          if (user.allocation) {
+            quotaRam.textContent = formatQuota(
+              user.allocation.ram_mb,
+              user.quota_ram_mb,
+              "MB",
+            );
+            quotaCpu.textContent = formatQuota(
+              user.allocation.cpu,
+              user.quota_cpu,
+              "cores",
+            );
+            quotaDisk.textContent = formatQuota(
+              user.allocation.disk_gb,
+              user.quota_disk_gb,
+              "GB",
+            );
+            quotaCard.hidden = false;
+          }
+
+          userView.hidden = false;
+          void loadMyContainers();
+        }
+
+        app.hidden = false;
+      }
+
+      void syncSession({
+        onSuccess(user) {
+          renderDashboard(user);
+        },
+        onUnauthorized() {
+          window.location.replace("/login");
+        },
+        onError(err) {
+          if (app.hidden) {
+            loading.hidden = true;
+            const errorMsg = document.createElement("div");
+            errorMsg.className = "alert alert-error";
+            errorMsg.textContent =
+              err instanceof ApiError
+                ? `Session error (${err.status}): ${err.message}`
+                : "Could not reach the server. Please check the backend connection.";
+            document.body.appendChild(errorMsg);
+          }
+        },
+      });
+    </script>
+
+    <style>
+      .global-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        padding: 5rem 1rem;
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+      }
+
+      .welcome-card {
+        margin-bottom: 2rem;
+      }
+
+      .greeting-badge {
+        display: inline-block;
+        padding: 0.2rem 0.65rem;
+        background: var(--accent-cyan-dim);
+        border: 1px solid rgba(6, 182, 212, 0.3);
+        border-radius: var(--radius-full);
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--accent-cyan-light);
+        margin-bottom: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .accent-text {
+        color: var(--accent-cyan-light);
+      }
+
+      .role-desc {
+        color: var(--text-secondary);
+        margin: 0;
+        font-size: 0.875rem;
+      }
+
+      .quota-container {
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      .quota-container h3 {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        margin-bottom: 0.75rem;
+      }
+
+      .quota-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+        gap: 1rem;
+      }
+
+      .quota-box {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        padding: 0.85rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+      }
+
+      .quota-label {
+        font-size: 0.725rem;
+        color: var(--text-muted);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+
+      .quota-val {
+        font-size: 0.9rem;
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+
+      .admin-signpost {
+        margin-bottom: 2rem;
+      }
+
+      .signpost-content {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+      }
+
+      .signpost-info h2 {
+        margin: 0 0 0.4rem;
+      }
+
+      .signpost-info p {
+        margin: 0;
+        font-size: 0.9rem;
+      }
+
+      .signpost-links {
+        display: flex;
+        gap: 0.75rem;
+      }
+
+      .user-containers-section {
+        margin-top: 2rem;
+      }
+
+      .section-title-row h2 {
+        margin: 0 0 1rem;
+      }
+
+      .loading-state, .empty-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        padding: 3rem 2rem;
+        text-align: center;
+      }
+
+      .empty-state {
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .empty-icon {
+        font-size: 2.25rem;
+      }
+
+      .empty-state h3 {
+        margin: 0;
+      }
+
+      .empty-state p {
+        color: var(--text-muted);
+        margin: 0;
+        font-size: 0.875rem;
+      }
+
+      .tiles-grid[hidden] {
+        display: none !important;
+      }
+
+      .tile-cell {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 1.25rem;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
+        transition: all var(--transition-normal);
+      }
+
+      .tile-cell:hover {
+        border-color: var(--border-medium);
+        transform: translateY(-2px);
+      }
+
+      .tile-footer {
+        margin-top: 1.25rem;
+        padding-top: 0.85rem;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      .detail-action-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.825rem;
+        font-weight: 600;
+        color: var(--accent-cyan);
+        text-decoration: none;
+        transition: all var(--transition-fast);
+      }
+
+      .detail-action-link:hover {
+        color: var(--accent-cyan-light);
+        gap: 0.6rem;
+      }
+    </style>
+  </body>
+</html>

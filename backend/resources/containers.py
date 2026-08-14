@@ -10,13 +10,16 @@ craft requests that bypass client-side validation entirely.
 import re
 
 import falcon
+from pylxd.exceptions import LXDAPIException
 
 from backend.auth.middleware import require_role
 from backend.db import repo
 from backend.lxd import client as lxd_client
+from backend.lxd.client import LXDUnavailableError
 from backend.lxd.quota import check_quota
 from backend.resources.validation import (
     require_object,
+    validate_bool,
     validate_limits,
     validate_string,
 )
@@ -26,21 +29,87 @@ from backend.resources.validation import (
 _CONTAINER_NAME_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+def _extract_ip_addresses(network: dict) -> list[str]:
+    """Extract a list of non-loopback IPv4 addresses from LXD network state."""
+    addresses: list[str] = []
+    if not isinstance(network, dict):
+        return addresses
+
+    for iface in network.values():
+        if not isinstance(iface, dict):
+            continue
+        for addr in iface.get("addresses", []) or []:
+            if (
+                isinstance(addr, dict)
+                and addr.get("family") == "inet"
+                and addr.get("scope") == "global"
+                and addr.get("address")
+            ):
+                addresses.append(addr["address"])
+
+    return addresses
+
+
 def _enrich_with_lxd_state(db_record: dict) -> dict:
     """Merge a DB container record with live LXD state if available.
 
     If LXD is unreachable or the container doesn't exist in LXD, the
     DB record is returned as-is with a 'lxd_status' of 'Unknown'.
     """
+    return _enrich_with_lxd_detail(db_record)
+
+
+def _enrich_with_lxd_detail(db_record: dict) -> dict:
+    """Merge a DB container record with the live details needed for detail view."""
     result = dict(db_record)
-    lxd_info = lxd_client.get_container(db_record["lxd_name"])
+    lxd_info = lxd_client.get_container_details(db_record["lxd_name"])
     if lxd_info:
+        config = lxd_info.get("config", {}) or {}
+        state = lxd_info.get("state", {}) or {}
         result["lxd_status"] = lxd_info.get("status", "Unknown")
-        result["lxd_config"] = lxd_info.get("config", {})
+        result["lxd_architecture"] = lxd_info.get("architecture", "")
+        result["lxd_created_at"] = lxd_info.get("created_at", "")
+        result["lxd_image"] = (
+            config.get("image.description")
+            or config.get("image.os")
+            or lxd_info.get("description")
+            or result.get("image", "")
+        )
+        result["lxd_ip_addresses"] = _extract_ip_addresses(
+            lxd_info.get("state", {}).get("network", {}),
+        )
+        result["lxd_process_count"] = int(state.get("processes", 0) or 0)
     else:
         result["lxd_status"] = "Unknown"
-        result["lxd_config"] = {}
+        result["lxd_architecture"] = ""
+        result["lxd_created_at"] = result.get("created_at", "")
+        result["lxd_image"] = result.get("image", "")
+        result["lxd_ip_addresses"] = []
+        result["lxd_process_count"] = 0
     return result
+
+
+def _format_lxd_api_error(exc: LXDAPIException) -> str:
+    """Return a stable, human-readable error message from an LXD API exception."""
+    try:
+        return str(exc)
+    except Exception:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    return (
+                        data.get("error")
+                        or data.get("metadata", {}).get("err")
+                        or response.content.decode("utf-8", errors="ignore")
+                    )
+            except Exception:
+                try:
+                    return response.content.decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+    return "Unknown LXD error"
 
 
 class ContainerListResource:
@@ -73,9 +142,7 @@ class ContainerListResource:
             assignments = repo.list_assignments_for_user(user_id)
             containers = []
             for assignment in assignments:
-                container = repo.get_container_by_id(
-                    assignment["container_id"]
-                )
+                container = repo.get_container_by_id(assignment["container_id"])
                 # Only include active (not soft-deleted) containers
                 if container and container["deleted_at"] is None:
                     containers.append(container)
@@ -147,6 +214,28 @@ class ContainerListResource:
             defaults={"ram_mb": 0, "cpu": 0.0, "disk_gb": 0},
         )
 
+        # --- Optional placement and lifecycle fields ---
+        # All five are optional and all default to "leave it alone": blank
+        # network/storage_pool inherit the default profile, and both toggles
+        # default to off. That keeps a body written before these existed
+        # producing exactly the container it produced then.
+        #
+        # None of them are validated against what LXD actually offers. The
+        # options endpoint below reports the real names, but a stale form
+        # could still send a pool that has since been removed — LXD rejects
+        # that at create time with a precise message, and re-checking here
+        # would only duplicate a rule LXD already owns while opening a
+        # window where the two disagree.
+        network = validate_string(body.get("network"), "network", required=False)
+        storage_pool = validate_string(
+            body.get("storage_pool"), "storage_pool", required=False
+        )
+        description = validate_string(
+            body.get("description"), "description", required=False
+        )
+        ephemeral = validate_bool(body.get("ephemeral"), "ephemeral")
+        autostart = validate_bool(body.get("autostart"), "autostart")
+
         # If pre-assigning to a user, check their quota first
         assign_to = body.get("assign_to")
         if assign_to is not None and not isinstance(assign_to, str):
@@ -161,9 +250,7 @@ class ContainerListResource:
                     title="User not found",
                     description=f"No user found with id '{assign_to}'.",
                 )
-            allowed, reason = check_quota(
-                assign_to, ram_mb, cpu, disk_gb
-            )
+            allowed, reason = check_quota(assign_to, ram_mb, cpu, disk_gb)
             if not allowed:
                 raise falcon.HTTPBadRequest(
                     title="Quota exceeded",
@@ -175,15 +262,47 @@ class ContainerListResource:
         if ram_mb > 0:
             lxd_limits["limits.memory"] = f"{ram_mb}MB"
         if cpu > 0:
-            lxd_limits["limits.cpu"] = str(cpu)
+            # Format CPU limits for LXD: use an integer string for whole
+            # numbers ("1" not "1.0") and a compact decimal for floats.
+            try:
+                if isinstance(cpu, float) and cpu.is_integer():
+                    cpu_str = str(int(cpu))
+                elif isinstance(cpu, float):
+                    cpu_str = ("%.3f" % cpu).rstrip("0").rstrip(".")
+                else:
+                    cpu_str = str(cpu)
+            except Exception:
+                cpu_str = str(cpu)
+            lxd_limits["limits.cpu"] = cpu_str
+        if autostart:
+            # LXD models autostart as ordinary container config, not as a
+            # top-level property, so it travels with the limits dict.
+            lxd_limits["boot.autostart"] = "true"
 
         # Create the container in LXD
         try:
-            lxd_client.create_container(name, image, lxd_limits)
+            lxd_client.create_container(
+                name,
+                image,
+                lxd_limits,
+                network=network,
+                storage_pool=storage_pool,
+                ephemeral=ephemeral,
+                description=description,
+            )
+        except LXDAPIException as e:
+            # A user-supplied create request failed validation at the LXD API
+            # layer. This is a client error, not an outage. Report it as 400
+            # so the frontend can show the actual LXD rejection reason.
+            lxd_error = _format_lxd_api_error(e)
+            raise falcon.HTTPBadRequest(
+                title="Invalid container request",
+                description=f"LXD rejected the create request: {lxd_error}",
+            )
         except Exception as e:
-            # LXD being unreachable is a service availability issue, not a code bug. Return 503
-            # with a clear message so the frontend can show a retry
-            # prompt, rather than a generic 500 that looks like a crash.
+            # LXD being unreachable is a service availability issue, not a code bug.
+            # Return 503 with a clear message so the frontend can show a retry prompt
+            # rather than a generic 500 that looks like a crash.
             raise falcon.HTTPServiceUnavailable(
                 title="LXD unreachable",
                 description=f"Cannot create container — LXD error: {e}",
@@ -293,9 +412,7 @@ class ContainerDetailResource:
                     f"{sorted(_VALID_STATE_ACTIONS)}.",
                 )
             try:
-                lxd_client.change_container_state(
-                    container["lxd_name"], action
-                )
+                lxd_client.change_container_state(container["lxd_name"], action)
             except Exception as e:
                 # 503, not 500, when LXD is unreachable — a clean, documented failure rather
                 # than a raw stack trace.
@@ -359,9 +476,7 @@ class ContainerDetailResource:
                 if not allowed:
                     raise falcon.HTTPBadRequest(
                         title="Quota exceeded",
-                        description=(
-                            f"{assignee['email']}: {reason}"
-                        ),
+                        description=(f"{assignee['email']}: {reason}"),
                     )
 
         # Build LXD config from new limits
@@ -369,13 +484,20 @@ class ContainerDetailResource:
         if new_ram > 0:
             lxd_limits["limits.memory"] = f"{new_ram}MB"
         if new_cpu > 0:
-            lxd_limits["limits.cpu"] = str(new_cpu)
+            try:
+                if isinstance(new_cpu, float) and new_cpu.is_integer():
+                    cpu_str = str(int(new_cpu))
+                elif isinstance(new_cpu, float):
+                    cpu_str = ("%.3f" % new_cpu).rstrip("0").rstrip(".")
+                else:
+                    cpu_str = str(new_cpu)
+            except Exception:
+                cpu_str = str(new_cpu)
+            lxd_limits["limits.cpu"] = cpu_str
 
         # Update limits in LXD
         try:
-            lxd_client.update_container_limits(
-                container["lxd_name"], lxd_limits
-            )
+            lxd_client.update_container_limits(container["lxd_name"], lxd_limits)
         except Exception as e:
             # Decision 7.10 / Phase 14.2: 503 so the frontend gets a
             # clean, retryable failure — not a generic 500.
@@ -385,9 +507,7 @@ class ContainerDetailResource:
             )
 
         # Update the DB cache to keep it in sync with LXD
-        repo.update_container_limits(
-            container_id, new_ram, new_cpu, new_disk
-        )
+        repo.update_container_limits(container_id, new_ram, new_cpu, new_disk)
 
         # Audit log: limit changes leave a trail so admins can trace
         # resource allocation changes over time.
@@ -454,4 +574,50 @@ class ContainerDetailResource:
         resp.media = {
             "id": container_id,
             "message": f"Container '{container['lxd_name']}' deleted",
+        }
+
+
+class LxdOptionsResource:
+    """GET /api/lxd/options — the images, networks, and pools this host has.
+
+    Exists so the creation form can offer what LXD actually reports instead
+    of a hardcoded list that silently drifts from the host (PROJECT-PLAN
+    5.2). Admin-only, matching container creation itself: a regular user
+    cannot create a container, so the host's storage topology is not
+    theirs to enumerate.
+    """
+
+    def on_get(self, req: falcon.Request, resp: falcon.Response) -> None:
+        """Return the host's available images, networks, and storage pools."""
+        require_role(req, "admin")
+
+        # Degrades rather than fails, same as the accounting endpoint: with
+        # LXD down the form can still be rendered against free-text fields
+        # and the server will reject anything invalid at create time. A 503
+        # here would block creation entirely on a lookup that is only ever
+        # advisory.
+        stale = False
+        lxd_error = None
+        images: list[dict] = []
+        networks: list[dict] = []
+        storage_pools: list[dict] = []
+
+        try:
+            images = lxd_client.list_images()
+            networks = lxd_client.list_networks()
+            storage_pools = lxd_client.list_storage_pools()
+        except LXDUnavailableError as exc:
+            stale = True
+            lxd_error = str(exc)
+
+        resp.media = {
+            "images": images,
+            "networks": networks,
+            "storage_pools": storage_pools,
+            # stale=True means these lists are empty because LXD could not
+            # be reached, NOT because the host has none. The form has to
+            # tell those apart to avoid showing an empty dropdown as if it
+            # were the authoritative set.
+            "stale": stale,
+            "lxd_error": lxd_error,
         }

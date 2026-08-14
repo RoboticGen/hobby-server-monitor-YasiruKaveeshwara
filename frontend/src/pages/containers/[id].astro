@@ -1,0 +1,591 @@
+---
+// Step 19.2 — Container detail page.
+//
+// Shows the live MetricTile (Phase 17) for the current numbers plus a
+// HistoryChart of one metric series, with a 1h/24h/7d window selector that
+// re-fetches GET /api/containers/{id}/history?window=... and re-renders the
+// chart.
+//
+// Step 22.1 also mounts the Terminal (Phase 21) here. This is the one page
+// that already resolves a single container and enforces access on it, so it is
+// where "look at this container" and "run something in this container" belong
+// together — and it gives Terminal a route reachable by clicking a tile on
+// either dashboard, rather than only by hand-typing a query string.
+//
+// WHY THE CONTAINER ID ARRIVES AS ?container=<uuid> AND NOT AS THE [id] PATH
+// SEGMENT: this project builds to static output with no adapter (decision
+// 7.12 — Falcon serves the built files, there is no Node server in
+// production). Astro requires getStaticPaths() for every dynamic route under
+// static output, and it runs at BUILD time, when no container UUIDs exist —
+// so a real /containers/<uuid> page cannot be emitted. The guide's file name
+// is kept exactly as specified, getStaticPaths() emits one shell at
+// /containers/view/, and the shell reads the real id from the query string,
+// the same pattern metric-tile-test.astro already uses. Making /containers/
+// <uuid> a genuine route needs an SSR adapter — flagged in the step summary.
+
+/**
+ * Emit the single static shell this page ships as.
+ *
+ * The sentinel "view" is not a container id and is never matched against one;
+ * it exists only because a dynamic route file must yield at least one path at
+ * build time. The real id comes from ?container= at runtime.
+ */
+export function getStaticPaths() {
+  return [{ params: { id: "view" } }];
+}
+
+import SiteHeader from "../../components/SiteHeader.astro";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Container detail · Server Monitor</title>
+  </head>
+  <body>
+    <SiteHeader maxWidth="72rem" />
+
+    <main>
+      <!-- Breadcrumbs -->
+      <nav class="breadcrumb-nav">
+        <a href="/">Dashboard</a>
+        <span class="breadcrumb-sep">/</span>
+        <a href="/admin">Containers</a>
+        <span class="breadcrumb-sep">/</span>
+        <span id="breadcrumb-current" class="breadcrumb-current">Instance</span>
+      </nav>
+
+      <div id="loading" class="detail-loading-skeleton">
+        <div class="skeleton-tile-card">
+          <div class="skeleton-header-row">
+            <div class="skeleton-shimmer skeleton-title-box" style="width: 35%; height: 22px;"></div>
+            <div class="skeleton-shimmer skeleton-badge-box"></div>
+          </div>
+          <div class="skeleton-gauges-grid" style="margin-top: 1rem;">
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+            <div class="skeleton-gauge-box">
+              <div class="skeleton-shimmer skeleton-cell" style="width: 40%;"></div>
+              <div class="skeleton-shimmer skeleton-cell" style="width: 70%; height: 24px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <div class="skeleton-shimmer skeleton-cell" style="width: 160px; height: 20px; margin-bottom: 0.75rem;"></div>
+          <div class="skeleton-tile-card" style="height: 220px;">
+            <div class="skeleton-shimmer skeleton-meter-bar" style="height: 100%;"></div>
+          </div>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <div class="skeleton-shimmer skeleton-cell" style="width: 120px; height: 20px; margin-bottom: 0.75rem;"></div>
+          <div class="skeleton-tile-card" style="height: 260px; background: #090d16; border-color: #1e293b;">
+            <div class="skeleton-shimmer skeleton-cell" style="width: 30%; background: rgba(255,255,255,0.06);"></div>
+            <div class="skeleton-shimmer skeleton-meter-bar" style="height: 70%; margin-top: 1rem; background: rgba(255,255,255,0.04);"></div>
+          </div>
+        </div>
+      </div>
+      <div id="error" class="alert alert-error" role="alert" hidden>
+        <p id="error-text"></p>
+        <button type="button" class="btn" onclick="location.reload()">Retry Connection</button>
+      </div>
+
+      <div id="detail" hidden>
+        <div id="tile"></div>
+
+        <section class="detail-section-block">
+          <div class="section-headline">
+            <span class="section-icon">📈</span>
+            <h2>Historical Telemetry Streams</h2>
+          </div>
+          <p class="section-subtext">Time-series memory, CPU load, disk consumption, and network I/O.</p>
+          <div id="graphs"></div>
+        </section>
+
+        <section class="detail-section-block">
+          <div class="section-headline">
+            <span class="section-icon">💻</span>
+            <h2>Interactive Shell Terminal</h2>
+          </div>
+          <p class="section-subtext">Direct command execution within container environment.</p>
+          <div id="terminal"></div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import { apiFetch, ApiError } from "../../lib/api";
+      import ContainerDetailSummary from "../../components/ContainerDetailSummary";
+      import ContainerResourceGraphs from "../../components/ContainerResourceGraphs";
+      import Terminal from "../../components/Terminal";
+
+      /**
+       * GET /api/containers/{id} returns the raw DB row — unlike the list
+       * endpoint, it does NOT run _enrich_with_lxd_state(), so there is no
+       * lxd_status field here. Columns come straight from schema.sql.
+       */
+      interface ContainerRecord {
+        id: string;
+        lxd_name: string;
+        image: string;
+        limit_ram_mb: number;
+        limit_cpu: number;
+        limit_disk_gb: number;
+        deleted_at: string | null;
+        lxd_status?: string;
+        lxd_image?: string;
+        lxd_ip_addresses?: string[];
+        lxd_architecture?: string;
+        lxd_created_at?: string;
+      }
+
+      const loading = document.getElementById("loading") as HTMLElement;
+      const errorEl = document.getElementById("error") as HTMLElement;
+      const detail = document.getElementById("detail") as HTMLElement;
+      const tileMount = document.getElementById("tile") as HTMLElement;
+      const graphsMount = document.getElementById("graphs") as HTMLElement;
+      const terminalMount = document.getElementById("terminal") as HTMLElement;
+
+      /** Show a message in the page-level error slot and stop the spinner. */
+      function fail(message: string): void {
+        loading.hidden = true;
+        detail.hidden = true;
+        (document.getElementById("error-text") as HTMLElement).textContent = message;
+        errorEl.hidden = false;
+      }
+
+      /**
+       * Turn a failed request into readable copy.
+       *
+       * The server's own description is passed through, because for the case
+       * that matters most here — requesting a container you do not own — the
+       * backend answers 403 with an explicit "You do not have access to this
+       * container." Replacing that with generic wording would lose the one
+       * detail the reader needs.
+       */
+      function describe(err: unknown, subject: string): string {
+        if (err instanceof ApiError) {
+          return `Could not load ${subject} (${err.status}): ${err.message}`;
+        }
+        return `Could not reach the server to load ${subject}.`;
+      }
+
+      const containerId = new URLSearchParams(location.search).get("container");
+
+      if (!containerId) {
+        // Explains the static-output shell rather than showing an empty page:
+        // without an id there is nothing to fetch and no way to guess one.
+        fail(
+          "No container specified. Add ?container=<container-id> to this URL, " +
+            "or open this page from the dashboard.",
+        );
+      } else {
+        try {
+          // Metadata first: the detail component needs the name, allocated
+          // limits, and live LXD metadata. This call is also what enforces
+          // access — it answers 403 for a container the caller does not own.
+          const container =
+            await apiFetch<ContainerRecord>(
+              `/api/containers/${encodeURIComponent(containerId)}`,
+            );
+
+          loading.hidden = true;
+          detail.hidden = false;
+          const breadcrumbCurrent = document.getElementById("breadcrumb-current");
+          if (breadcrumbCurrent) breadcrumbCurrent.textContent = container.lxd_name;
+          document.title = `${container.lxd_name} · Server Monitor`;
+
+          createRoot(tileMount).render(
+            createElement(ContainerDetailSummary, {
+              containerId: container.id,
+              lxdName: container.lxd_name,
+              image: container.image,
+              osImage: container.lxd_image || container.image,
+              ipAddresses: container.lxd_ip_addresses || [],
+              architecture: container.lxd_architecture || "",
+              createdAt: container.lxd_created_at || container.created_at,
+              initialState: container.lxd_status || "Unknown",
+              ramAllocatedMb: container.limit_ram_mb,
+              cpuAllocated: container.limit_cpu,
+              diskAllocatedGb: container.limit_disk_gb,
+            }),
+          );
+
+          createRoot(graphsMount).render(
+            createElement(ContainerResourceGraphs, {
+              containerId: container.id,
+              ramAllocatedMb: container.limit_ram_mb,
+              cpuAllocated: container.limit_cpu,
+              diskAllocatedGb: container.limit_disk_gb,
+            }),
+          );
+
+          // Mounted only after the metadata call above succeeded — and that is
+          // the call that enforces access, answering 403 for a container this
+          // caller was not assigned. So a command box never appears for a
+          // container the caller cannot use. That is presentation, not
+          // protection: the exec endpoint re-checks access on every call
+          // regardless of what the page chose to render.
+          createRoot(terminalMount).render(
+            createElement(Terminal, { containerId: container.id }),
+          );
+        } catch (err) {
+          // Same split as the dashboard: 401 means no session, so sign in.
+          // Everything else — including the 403 this page must handle — is
+          // shown, because redirecting would hide the real answer.
+          if (err instanceof ApiError && err.status === 401) {
+            location.replace("/login");
+          } else {
+            fail(describe(err, "this container"));
+          }
+        }
+      }
+    </script>
+
+    <style>
+      main {
+        max-width: 72rem;
+        margin: 1.5rem auto 3rem;
+        padding: 0 1.25rem;
+      }
+
+      /* Breadcrumbs */
+      .breadcrumb-nav {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.85rem;
+        margin-bottom: 1.25rem;
+        color: var(--text-muted);
+      }
+
+      .breadcrumb-nav a {
+        color: var(--text-secondary);
+        text-decoration: none;
+        transition: color var(--transition-fast);
+      }
+
+      .breadcrumb-nav a:hover {
+        color: var(--accent-cyan);
+      }
+
+      .breadcrumb-sep {
+        color: var(--border-medium);
+      }
+
+      .breadcrumb-current {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+
+      /* Terminal internals, styled here for the same reason as the tile and the
+         chart: the component renders plain semantic markup and no styles. */
+      :global(.terminal-shell) {
+        border: 1px solid #1f2933;
+        border-radius: 12px;
+        overflow: hidden;
+        background: linear-gradient(180deg, #111827 0%, #0b1220 100%);
+        color: #e5e7eb;
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.16);
+      }
+
+      :global(.terminal-bar) {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.85rem 1rem;
+        background: rgba(255, 255, 255, 0.03);
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+      }
+
+      :global(.terminal-dots) {
+        display: flex;
+        gap: 0.35rem;
+      }
+
+      :global(.terminal-dots span) {
+        width: 0.7rem;
+        height: 0.7rem;
+        border-radius: 999px;
+        background: #64748b;
+      }
+
+      :global(.terminal-title) {
+        font-family: ui-monospace, monospace;
+        font-size: 0.9rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      :global(.terminal-status) {
+        margin-left: auto;
+        font-size: 0.75rem;
+        padding: 0.25rem 0.65rem;
+        border-radius: 999px;
+        background: rgba(96, 165, 250, 0.15);
+        color: #bfdbfe;
+      }
+
+      :global(.terminal-panel) {
+        padding: 1rem;
+      }
+
+      :global(.terminal-examples) {
+        padding: 0.9rem;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.72);
+      }
+
+      :global(.terminal-examples-header) {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: baseline;
+        margin-bottom: 0.85rem;
+        font-size: 0.82rem;
+        color: #cbd5e1;
+      }
+
+      :global(.terminal-examples-header strong) {
+        font-size: 0.9rem;
+        color: #f8fafc;
+      }
+
+      :global(.terminal-examples-grid) {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+        gap: 0.75rem;
+      }
+
+      :global(.terminal-example) {
+        display: grid;
+        gap: 0.55rem;
+        padding: 0.75rem;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        border-radius: 10px;
+        background: rgba(17, 24, 39, 0.9);
+      }
+
+      :global(.terminal-example-copy) {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      :global(.terminal-example-copy code) {
+        flex: 1;
+        padding: 0.45rem 0.6rem;
+        border-radius: 8px;
+        background: #020617;
+        color: #f8fafc;
+        font-family: ui-monospace, monospace;
+        font-size: 0.82rem;
+        overflow-wrap: anywhere;
+      }
+
+      :global(.terminal-example-copy button),
+      :global(.terminal-example-run) {
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.35rem 0.75rem;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        color: #e5e7eb;
+        cursor: pointer;
+      }
+
+      :global(.terminal-example-copy button:hover),
+      :global(.terminal-example-run:hover) {
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      :global(.terminal-example-meta) {
+        display: grid;
+        gap: 0.1rem;
+        color: #cbd5e1;
+      }
+
+      :global(.terminal-example-meta span) {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #f8fafc;
+      }
+
+      :global(.terminal-example-meta p) {
+        margin: 0;
+        font-size: 0.78rem;
+        line-height: 1.35;
+      }
+
+      :global(.terminal-clipboard-status) {
+        min-height: 1.1rem;
+        margin-top: 0.75rem;
+        font-size: 0.78rem;
+        color: #93c5fd;
+      }
+
+      :global(.terminal-input) {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-top: 1rem;
+      }
+
+      :global(.terminal-input label) {
+        font-size: 0.85rem;
+        font-weight: 700;
+        color: #cbd5e1;
+      }
+
+      /* The input takes the remaining width: commands are the long part of
+         this row, the label and button are fixed. */
+      :global(.terminal-input input) {
+        flex: 1;
+        font-family: ui-monospace, monospace;
+        font-size: 0.9rem;
+        padding: 0.55rem 0.7rem;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 10px;
+        background: #020617;
+        color: #f8fafc;
+      }
+
+      :global(.terminal-input input::placeholder) {
+        color: #64748b;
+      }
+
+      :global(.terminal-input button) {
+        font: inherit;
+        padding: 0.55rem 1rem;
+        border: 1px solid rgba(96, 165, 250, 0.4);
+        border-radius: 10px;
+        background: #2563eb;
+        color: #fff;
+        cursor: pointer;
+      }
+
+      :global(.terminal-input button:disabled) {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      :global(.terminal .hint) {
+        margin: 0.7rem 0 0;
+        font-size: 0.8rem;
+        color: #cbd5e1;
+      }
+
+      /* The height cap is what makes this a scrolling log rather than a page
+         that grows without limit, and it is what the component's auto-scroll
+         to the newest entry depends on. */
+      :global(.terminal-log) {
+        max-height: 22rem;
+        overflow-y: auto;
+        margin: 0.9rem 0 0;
+        padding: 0.9rem;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 10px;
+        background: #020617;
+        color: #e5e7eb;
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+        line-height: 1.55;
+        /* Long output lines wrap instead of forcing the box to scroll
+           sideways, which would hide the start of every line. */
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      /* The echoed command is the anchor for reading the transcript, so it is
+         the one part that is emphasised. */
+      :global(.terminal-log .prompt) {
+        font-weight: 700;
+        color: #93c5fd;
+      }
+
+      :global(.terminal-log .stderr) {
+        color: #fca5a5;
+      }
+
+      :global(.terminal-log .exit) {
+        color: #94a3b8;
+      }
+
+      /* A non-zero exit and a refused request both mean "this did not do what
+         you asked", so they share one treatment. */
+      :global(.terminal-log .failure) {
+        color: #fda4af;
+        font-weight: 700;
+      }
+
+      :global(.terminal-log:focus-visible) {
+        outline: 3px solid #60a5fa;
+        outline-offset: 2px;
+      }
+
+      /* Tile internals: MetricTile renders plain semantic markup and carries
+         no styles of its own, so each page that mounts it styles it. */
+      :global(.tile) {
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        padding: 0.75rem 1rem;
+      }
+
+      :global(.tile header) {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.5rem;
+      }
+
+      :global(.tile h3) {
+        margin: 0;
+        font-size: 1rem;
+        overflow-wrap: anywhere;
+      }
+
+      :global(.tile .state) {
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      :global(.tile dl) {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.15rem 0.75rem;
+        margin: 0.75rem 0 0;
+        font-size: 0.9rem;
+      }
+
+      :global(.tile dt) {
+        color: #555;
+      }
+
+      :global(.tile dd) {
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      :global(.tile .error) {
+        color: #a12;
+        font-size: 0.85rem;
+      }
+    </style>
+  </body>
+</html>

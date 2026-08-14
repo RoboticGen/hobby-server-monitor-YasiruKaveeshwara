@@ -1,0 +1,416 @@
+---
+// Site header — the primary navigation bar for every signed-in page.
+import LogoutButton from "./LogoutButton";
+import StatusBanner from "./StatusBanner";
+import "../styles/global.css";
+
+interface Props {
+  maxWidth?: string;
+}
+
+const { maxWidth = "72rem" } = Astro.props;
+
+interface NavLink {
+  href: string;
+  label: string;
+  adminOnly: boolean;
+}
+
+const navLinks: NavLink[] = [
+  { href: "/", label: "Dashboard", adminOnly: false },
+  { href: "/admin", label: "Containers", adminOnly: true },
+  { href: "/admin/users", label: "Users", adminOnly: true },
+];
+
+const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
+---
+
+<header class="site-header">
+  <div class="bar" style={`max-width: ${maxWidth}`}>
+    <a class="brand" href="/">
+      <span class="brand-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+          <line x1="6" y1="6" x2="6.01" y2="6"></line>
+          <line x1="6" y1="18" x2="6.01" y2="18"></line>
+        </svg>
+      </span>
+      <span class="brand-text">Server<span class="brand-accent">Monitor</span></span>
+    </a>
+
+    <nav id="header-nav" aria-label="Main">
+      <ul>
+        {
+          navLinks.map((link) => (
+            <li hidden={link.adminOnly} data-admin-only={link.adminOnly ? "true" : null}>
+              <a href={link.href} aria-current={currentPath === link.href ? "page" : null}>
+                {link.label}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </nav>
+
+    <div class="session">
+      <p id="header-pending" class="muted">
+        <span class="pulse-dot"></span> Checking session…
+      </p>
+
+      <div id="header-identity" class="identity" hidden>
+        <div class="user-chip">
+          <span class="avatar-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          </span>
+          <span id="header-email" class="email"></span>
+          <span id="header-role" class="role"></span>
+        </div>
+        <LogoutButton client:load />
+      </div>
+
+      <a id="header-signin" class="signin" href="/login" hidden>Sign in</a>
+
+      <p id="header-unavailable" class="muted" role="status" hidden></p>
+    </div>
+  </div>
+</header>
+
+<StatusBanner client:load />
+
+<script is:inline>
+  (function () {
+    try {
+      var raw = sessionStorage.getItem("hsm_frontend_session");
+      if (raw) {
+        var user = JSON.parse(raw);
+        if (user && user.email) {
+          var pending = document.getElementById("header-pending");
+          var identity = document.getElementById("header-identity");
+          var email = document.getElementById("header-email");
+          var role = document.getElementById("header-role");
+          var nav = document.getElementById("header-nav");
+
+          if (email) email.textContent = user.email;
+          if (role) role.textContent = user.role;
+          if (identity) identity.hidden = false;
+          if (pending) pending.hidden = true;
+
+          if (user.role === "admin" && nav) {
+            var items = nav.querySelectorAll('li[data-admin-only="true"]');
+            for (var i = 0; i < items.length; i++) {
+              items[i].hidden = false;
+            }
+          }
+        }
+      }
+    } catch (e) {}
+  })();
+</script>
+
+<script>
+  import { syncSession } from "../lib/session";
+  import { ApiError } from "../lib/api";
+
+  const nav = document.getElementById("header-nav") as HTMLElement;
+  const pending = document.getElementById("header-pending") as HTMLElement;
+  const identity = document.getElementById("header-identity") as HTMLElement;
+  const email = document.getElementById("header-email") as HTMLElement;
+  const role = document.getElementById("header-role") as HTMLElement;
+  const signin = document.getElementById("header-signin") as HTMLElement;
+  const unavailable = document.getElementById(
+    "header-unavailable",
+  ) as HTMLElement;
+
+  function renderUser(user: { email: string; role: string }) {
+    pending.hidden = true;
+    signin.hidden = true;
+    unavailable.hidden = true;
+    email.textContent = user.email;
+    role.textContent = user.role;
+    identity.hidden = false;
+
+    if (user.role === "admin") {
+      const adminItems = nav.querySelectorAll<HTMLLIElement>(
+        'li[data-admin-only="true"]',
+      );
+      for (const item of adminItems) {
+        item.hidden = false;
+      }
+    } else {
+      const adminItems = nav.querySelectorAll<HTMLLIElement>(
+        'li[data-admin-only="true"]',
+      );
+      for (const item of adminItems) {
+        item.hidden = true;
+      }
+    }
+  }
+
+  void syncSession({
+    onSuccess(user) {
+      renderUser(user);
+    },
+    onUnauthorized() {
+      pending.hidden = true;
+      identity.hidden = true;
+      signin.hidden = false;
+    },
+    onError(err) {
+      if (identity.hidden) {
+        pending.hidden = true;
+        unavailable.textContent =
+          err instanceof ApiError
+            ? `Session unavailable (${err.status})`
+            : "Session unavailable";
+        unavailable.hidden = false;
+      }
+    },
+  });
+</script>
+
+<style>
+  .site-header [hidden] {
+    display: none !important;
+  }
+
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-sans);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  }
+
+  .bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem 1.5rem;
+    margin: 0 auto;
+    padding: 0.75rem 1.25rem;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-decoration: none;
+    letter-spacing: -0.02em;
+    user-select: none;
+  }
+
+  .brand-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, rgba(2, 132, 199, 0.12), rgba(37, 99, 235, 0.08));
+    border: 1px solid var(--border-accent);
+    color: var(--accent-cyan);
+    box-shadow: 0 2px 6px rgba(2, 132, 199, 0.12);
+  }
+
+  .brand-text {
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .brand-accent {
+    color: var(--accent-cyan);
+    margin-left: 1px;
+  }
+
+  #header-nav {
+    display: flex;
+    align-items: center;
+  }
+
+  #header-nav ul {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  #header-nav a {
+    display: block;
+    padding: 0.4rem 0.85rem;
+    border-radius: var(--radius-full);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-decoration: none;
+    transition: all var(--transition-fast);
+    border: 1px solid transparent;
+  }
+
+  #header-nav a:hover {
+    color: var(--text-primary);
+    background: #f1f5f9;
+  }
+
+  #header-nav a[aria-current="page"] {
+    background: rgba(2, 132, 199, 0.1);
+    color: var(--accent-cyan);
+    border-color: rgba(2, 132, 199, 0.3);
+    font-weight: 600;
+  }
+
+  .session {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+  }
+
+  .identity {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+  }
+
+  .user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.75rem;
+    background: #f8fafc;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+  }
+
+  .avatar-icon {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+  }
+
+  .email {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.825rem;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .role {
+    padding: 0.1rem 0.45rem;
+    background: #e2e8f0;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-full);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .signin {
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--accent-cyan);
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, #0284c7, #0369a1);
+    font-weight: 600;
+    color: #fff;
+    text-decoration: none;
+    font-size: 0.85rem;
+    box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25);
+  }
+
+  .muted {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.825rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .pulse-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-cyan);
+    box-shadow: 0 0 6px var(--accent-cyan);
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.1); }
+  }
+
+  .brand:focus-visible,
+  #header-nav a:focus-visible,
+  .signin:focus-visible {
+    outline: 2px solid var(--accent-cyan);
+    outline-offset: 2px;
+  }
+
+  :global(#header-identity button) {
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.75rem;
+    border: 1px solid #fecdd3;
+    border-radius: var(--radius-sm);
+    background: #fff1f2;
+    color: #e11d48;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  :global(#header-identity button:hover:not(:disabled)) {
+    background: #ffe4e6;
+    border-color: #fda4af;
+  }
+
+  :global(#header-identity p[role="alert"]) {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #e11d48;
+  }
+
+  :global(.status-banner) {
+    margin: 0;
+    padding: 0.6rem 1.25rem;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    text-align: center;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  :global(.status-banner.degraded) {
+    background: #fffbeb;
+    color: #92400e;
+    border-bottom: 1px solid #fde68a;
+  }
+
+  :global(.status-banner.unreachable) {
+    background: #fff1f2;
+    color: #9f1239;
+    border-bottom: 1px solid #fecdd3;
+  }
+</style>

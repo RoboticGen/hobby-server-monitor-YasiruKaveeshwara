@@ -19,7 +19,6 @@ from tinyflux import TinyFlux, Point, TagQuery, TimeQuery
 
 from backend.config import config
 
-
 # Module-level memoized instance. Initialised on first call to get_store()
 # and reused for all subsequent calls. A threading lock protects the
 # initialisation check so concurrent requests don't create two instances.
@@ -156,8 +155,7 @@ def get_latest_point(container_id: str) -> dict | None:
     Tag = TagQuery()
 
     results = store.search(
-        (Tag.container_id == container_id)
-        & (Tag.resolution == "raw")
+        (Tag.container_id == container_id) & (Tag.resolution == "raw")
     )
 
     if not results:
@@ -171,3 +169,51 @@ def get_latest_point(container_id: str) -> dict | None:
         "resolution": "raw",
         **latest.fields,
     }
+
+
+def get_recent_points(container_id: str, limit: int = 60) -> list[dict]:
+    """Return the most recent raw points for a container, newest-last.
+
+    Used by the /api/metrics/recent endpoint to pre-seed the frontend's
+    live graph on first load so the chart is immediately populated with
+    the last `limit` samples rather than starting empty and accumulating
+    point-by-point from subsequent 5-second polls.
+
+    Args:
+        container_id: UUID of the container to query.
+        limit: Maximum number of most-recent raw points to return.
+               Defaults to 60 (~5 minutes at a 5-second collector interval).
+
+    Returns:
+        A list of plain dicts ordered ascending by time (oldest first),
+        so the frontend can append new live points to the tail of this list.
+    """
+    store = get_store()
+    Tag = TagQuery()
+
+    # Fetch all raw points for this container (no time filter needed here;
+    # the retention job already prunes anything older than 24 h). Sorting
+    # after the fact is cheaper than a TinyFlux time-range scan when the
+    # raw dataset for a single container is small (collector_interval * 24h
+    # = at most ~8640 rows).
+    results = store.search(
+        (Tag.container_id == container_id) & (Tag.resolution == "raw")
+    )
+
+    if not results:
+        return []
+
+    # Sort ascending so the client sees oldest-first — matching what live
+    # polling appends to — and take only the last `limit` points.
+    sorted_results = sorted(results, key=lambda p: p.time)
+    recent = sorted_results[-limit:]
+
+    return [
+        {
+            "time": point.time.isoformat(),
+            "container_id": container_id,
+            "resolution": "raw",
+            **point.fields,
+        }
+        for point in recent
+    ]

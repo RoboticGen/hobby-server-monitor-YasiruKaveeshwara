@@ -1,0 +1,667 @@
+---
+// Admin dashboard: every container on the host, each with a live metric tile.
+import SiteHeader from "../../components/SiteHeader.astro";
+import "../../styles/global.css";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Containers · Server Monitor</title>
+  </head>
+  <body>
+    <SiteHeader />
+
+    <main>
+      <div class="page-title-row">
+        <div>
+          <h1>Host Infrastructure & Containers</h1>
+          <p class="subtitle">Live telemetry, capacity accounting, and container management.</p>
+        </div>
+      </div>
+
+      <div id="accounting-mount"></div>
+
+      <div class="containers-section">
+        <div class="section-header">
+          <h2>Container Fleet</h2>
+        </div>
+
+        <div id="loading" class="skeleton-grid">
+          {
+            [1, 2, 3].map(() => (
+              <div class="skeleton-tile-card">
+                <div class="skeleton-header-row">
+                  <div class="skeleton-shimmer skeleton-title-box" />
+                  <div class="skeleton-shimmer skeleton-badge-box" />
+                </div>
+                <div class="skeleton-meter-group">
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 40%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 55%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                  <div class="skeleton-meter-row">
+                    <div class="skeleton-shimmer skeleton-meter-label" style="width: 50%;" />
+                    <div class="skeleton-shimmer skeleton-meter-bar" />
+                  </div>
+                </div>
+                <div class="skeleton-shimmer skeleton-footer-box" />
+              </div>
+            ))
+          }
+        </div>
+
+        <div id="error" class="alert alert-error" role="alert" hidden>
+          <p id="error-text"></p>
+          <button type="button" class="btn" onclick="location.reload()">Retry Connection</button>
+        </div>
+
+        <div id="empty" class="empty-state glass-card" hidden>
+          <div class="empty-icon">📦</div>
+          <h3>No Active Containers</h3>
+          <p>There are currently no LXD containers deployed on this host. Provision one below.</p>
+        </div>
+
+        <div id="tiles" class="tiles-grid" hidden></div>
+      </div>
+
+      <div id="form-mount" hidden></div>
+    </main>
+
+    <script>
+      import { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import { apiFetch, ApiError } from "../../lib/api";
+      import { syncSession } from "../../lib/session";
+      import AccountingOverview from "../../components/AccountingOverview";
+      import MetricTile from "../../components/MetricTile";
+      import CreateContainerForm from "../../components/CreateContainerForm";
+
+      interface ContainerRecord {
+        id: string;
+        lxd_name: string;
+        image: string;
+        lxd_image: string;
+        lxd_ip_addresses: string[];
+        lxd_created_at: string;
+        lxd_process_count: number;
+        limit_ram_mb: number;
+        limit_cpu: number;
+        limit_disk_gb: number;
+        lxd_status: string;
+      }
+
+      interface ContainerListResponse {
+        containers: ContainerRecord[];
+      }
+
+      interface MeResponse {
+        role: string;
+      }
+
+      const loading = document.getElementById("loading") as HTMLElement;
+      const errorEl = document.getElementById("error") as HTMLElement;
+      const empty = document.getElementById("empty") as HTMLElement;
+      const tiles = document.getElementById("tiles") as HTMLElement;
+      const formMount = document.getElementById("form-mount") as HTMLElement;
+      const accountingMount = document.getElementById("accounting-mount") as HTMLElement;
+
+      function fail(message: string): void {
+        loading.hidden = true;
+        (document.getElementById("error-text") as HTMLElement).textContent = message;
+        errorEl.hidden = false;
+      }
+
+      function renderTiles(containers: ContainerRecord[]): void {
+        tiles.replaceChildren();
+
+        for (const container of containers) {
+          const cell = document.createElement("div");
+          cell.className = "tile-cell glass-card";
+
+          const mount = document.createElement("div");
+
+          const footer = document.createElement("div");
+          footer.className = "tile-footer";
+
+          const link = document.createElement("a");
+          link.href = `/containers/view/?container=${encodeURIComponent(container.id)}`;
+          link.className = "detail-action-link";
+          link.innerHTML = `
+            <span>Console & Telemetry</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M5 12h14"></path>
+              <path d="m12 5 7 7-7 7"></path>
+            </svg>
+          `;
+          link.setAttribute(
+            "aria-label",
+            `History and terminal for ${container.lxd_name}`,
+          );
+
+          footer.appendChild(link);
+          cell.append(mount, footer);
+          tiles.appendChild(cell);
+
+          createRoot(mount).render(
+            createElement(MetricTile, {
+              containerId: container.id,
+              name: container.lxd_name,
+              state: container.lxd_status,
+              osImage: container.lxd_image || container.image,
+              ipAddresses: container.lxd_ip_addresses || [],
+              createdAt: container.lxd_created_at,
+              processCount: container.lxd_process_count || 0,
+              ramAllocatedMb: container.limit_ram_mb,
+              diskAllocatedGb: container.limit_disk_gb,
+            }),
+          );
+        }
+      }
+
+      async function refreshContainers(): Promise<void> {
+        try {
+          const list =
+            await apiFetch<ContainerListResponse>("/api/containers");
+
+          empty.hidden = list.containers.length > 0;
+          tiles.hidden = list.containers.length === 0;
+          renderTiles(list.containers);
+        } catch {
+          // Keep existing list on refresh failure
+        }
+      }
+
+      let initialized = false;
+
+      async function loadFleet(): Promise<void> {
+        try {
+          const list = await apiFetch<ContainerListResponse>("/api/containers");
+          loading.hidden = true;
+
+          if (!initialized) {
+            initialized = true;
+            createRoot(accountingMount).render(createElement(AccountingOverview));
+
+            formMount.hidden = false;
+            createRoot(formMount).render(
+              createElement(CreateContainerForm, {
+                onCreated: refreshContainers,
+              }),
+            );
+          }
+
+          if (list.containers.length === 0) {
+            empty.hidden = false;
+            tiles.hidden = true;
+          } else {
+            empty.hidden = true;
+            tiles.hidden = false;
+            renderTiles(list.containers);
+          }
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            window.location.replace("/login");
+          } else if (err instanceof ApiError) {
+            fail(`Could not load containers (${err.status}): ${err.message}`);
+          } else {
+            fail("Could not reach the server to load containers.");
+          }
+        }
+      }
+
+      void syncSession({
+        onSuccess(user) {
+          if (user.role !== "admin") {
+            fail("This page is for administrators. Return to the dashboard.");
+            return;
+          }
+          void loadFleet();
+        },
+        onUnauthorized() {
+          window.location.replace("/login");
+        },
+        onError(err) {
+          fail("Could not reach the server to load session.");
+        },
+      });
+    </script>
+
+    <style>
+      .page-title-row {
+        margin-bottom: 2rem;
+      }
+
+      .subtitle {
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+        margin-top: -1rem;
+      }
+
+      .containers-section {
+        margin: 2.5rem 0;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1.25rem;
+      }
+
+      .section-header h2 {
+        margin: 0;
+      }
+
+      .loading-state,
+      .empty-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        padding: 3rem 2rem;
+        text-align: center;
+      }
+
+      .empty-state {
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .empty-icon {
+        font-size: 2.5rem;
+        margin-bottom: 0.5rem;
+        opacity: 0.8;
+      }
+
+      .empty-state h3 {
+        margin: 0;
+        color: var(--text-primary);
+      }
+
+      .empty-state p {
+        color: var(--text-muted);
+        max-width: 24rem;
+        margin: 0;
+      }
+
+      .tiles-grid[hidden] {
+        display: none !important;
+      }
+
+      .tile-cell {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 1.25rem;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
+        transition: all var(--transition-normal);
+      }
+
+      .tile-cell:hover {
+        border-color: var(--border-medium);
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-md);
+      }
+
+      .tile-footer {
+        margin-top: 1.25rem;
+        padding-top: 0.85rem;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      .detail-action-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.825rem;
+        font-weight: 600;
+        color: var(--accent-cyan);
+        text-decoration: none;
+        transition: all var(--transition-fast);
+      }
+
+      .detail-action-link:hover {
+        color: var(--accent-cyan-light);
+        gap: 0.6rem;
+      }
+
+      /* Global Component Support Styles */
+      :global(.metric-tile) {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      :global(.tile-header) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      :global(.title-area) {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+
+      :global(.tile-title) {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        word-break: break-word;
+      }
+
+      :global(.tile-meta) {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.775rem;
+        color: var(--text-muted);
+      }
+
+      :global(.ip-text) {
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+      }
+
+      :global(.meta-separator) {
+        color: var(--border-medium);
+      }
+
+      :global(.tile-error-banner) {
+        padding: 0.4rem 0.6rem;
+        background: rgba(245, 158, 11, 0.1);
+        border: 1px solid rgba(245, 158, 11, 0.25);
+        border-radius: var(--radius-xs);
+        font-size: 0.75rem;
+        color: #fde68a;
+      }
+
+      :global(.metrics-grid) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      :global(.metric-row) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+      }
+
+      :global(.metric-label-group) {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        font-size: 0.775rem;
+      }
+
+      :global(.metric-name) {
+        font-weight: 600;
+        color: var(--text-secondary);
+        letter-spacing: 0.04em;
+      }
+
+      :global(.metric-val) {
+        font-size: 0.8rem;
+        color: var(--text-primary);
+      }
+
+      :global(.metric-total) {
+        color: var(--text-muted);
+      }
+
+      :global(.metric-pct) {
+        color: var(--accent-cyan);
+      }
+
+      :global(.network-row) {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem;
+        padding-top: 0.5rem;
+        border-top: 1px dashed var(--border-subtle);
+        margin-top: 0.25rem;
+      }
+
+      :global(.net-stat) {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.75rem;
+      }
+
+      :global(.net-icon.rx) { color: #10b981; font-weight: 700; }
+      :global(.net-icon.tx) { color: #38bdf8; font-weight: 700; }
+      :global(.net-rate) { color: var(--text-primary); }
+      :global(.net-total) { color: var(--text-muted); font-size: 0.7rem; }
+
+      /* Accounting Panel Styles */
+      :global(.accounting-panel) {
+        margin-bottom: 2rem;
+      }
+
+      :global(.heading-title-group) {
+        display: flex;
+        align-items: baseline;
+        gap: 0.75rem;
+      }
+
+      :global(.containers-badge) {
+        padding: 0.2rem 0.6rem;
+        background: rgba(6, 182, 212, 0.1);
+        border: 1px solid rgba(6, 182, 212, 0.3);
+        border-radius: var(--radius-full);
+        font-size: 0.75rem;
+        color: var(--accent-cyan-light);
+        font-weight: 600;
+      }
+
+      :global(.capacity-grid) {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+        gap: 1.25rem;
+        margin-top: 1.25rem;
+      }
+
+      :global(.stat-box) {
+        padding: 1rem 1.15rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+      }
+
+      :global(.stat-header) {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 0.75rem;
+        margin-bottom: 0.4rem;
+      }
+
+      :global(.stat-label) {
+        color: var(--text-secondary);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+
+      :global(.stat-pct) {
+        color: var(--accent-cyan);
+        font-weight: 600;
+      }
+
+      :global(.stat-values) {
+        display: flex;
+        align-items: baseline;
+        gap: 0.35rem;
+        margin-bottom: 0.5rem;
+      }
+
+      :global(.stat-main) {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+
+      :global(.stat-sub) {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+      }
+
+      /* Creation Form Styles */
+      :global(.create-container-section) {
+        margin-top: 3rem;
+      }
+
+      :global(.form-header) {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1.75rem;
+      }
+
+      :global(.header-icon) {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: var(--radius-sm);
+        background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(59, 130, 246, 0.1));
+        border: 1px solid var(--border-accent);
+        color: var(--accent-cyan-light);
+      }
+
+      :global(.form-header h2) {
+        margin: 0;
+      }
+
+      :global(.section-desc) {
+        margin: 0.2rem 0 0;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+      }
+
+      :global(.form-grid) {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+        gap: 1.25rem;
+      }
+
+      :global(.form-group) {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      :global(.form-group label) {
+        font-size: 0.825rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+      }
+
+      :global(.field-hint) {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+
+      :global(.sliders-panel) {
+        margin: 1.5rem 0;
+        padding: 1.25rem;
+        background: var(--bg-surface-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+      }
+
+      :global(.sliders-panel h3) {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        font-size: 0.95rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      :global(.slider-box) {
+        margin-bottom: 1.25rem;
+      }
+
+      :global(.slider-box:last-child) {
+        margin-bottom: 0;
+      }
+
+      :global(.slider-header) {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 0.85rem;
+        font-weight: 500;
+      }
+
+      :global(.slider-value) {
+        color: var(--accent-cyan);
+        font-weight: 700;
+      }
+
+      :global(.slider-footer) {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+
+      :global(.advanced-grid) {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.25rem;
+        margin: 1.25rem 0;
+      }
+
+      :global(.toggles-row) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        margin: 1.25rem 0;
+      }
+
+      :global(.toggle-label) {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        cursor: pointer;
+        user-select: none;
+      }
+
+      :global(.toggle-label input[type="checkbox"]) {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent-cyan);
+        cursor: pointer;
+      }
+
+      :global(.form-actions) {
+        margin-top: 1.5rem;
+      }
+
+      @media (max-width: 640px) {
+        .advanced-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </body>
+</html>

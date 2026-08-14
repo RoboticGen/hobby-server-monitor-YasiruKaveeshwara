@@ -12,9 +12,30 @@ is unreachable — they return None/False/empty rather than crashing, and
 leave error handling to their callers.
 """
 
+from urllib.parse import urlparse
+
 import pylxd
 
 from backend.config import config
+
+
+def _normalize_lxd_endpoint(endpoint: str) -> str:
+    """Normalize the configured LXD endpoint for pylxd.
+
+    pylxd accepts a raw unix socket filesystem path, not a URI with
+    the `unix://` scheme. This helper rewrites both `unix://...` and
+    `unix:///...` forms into a bare path that pylxd accepts.
+    """
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "unix":
+        return endpoint
+
+    # unix://var/snap/lxd/common/lxd/unix.socket parses as netloc='var'
+    # and path='/snap/...'. Reconstruct the true filesystem path by
+    # prepending a slash when netloc is present.
+    if parsed.netloc:
+        return "/" + parsed.netloc + parsed.path
+    return parsed.path
 
 
 def _get_client() -> pylxd.Client:
@@ -24,13 +45,14 @@ def _get_client() -> pylxd.Client:
     passed for remote HTTPS connections. Otherwise a unix socket
     connection is assumed.
     """
+    endpoint = _normalize_lxd_endpoint(config.lxd_endpoint)
     if config.lxd_cert_path and config.lxd_key_path:
         return pylxd.Client(
-            endpoint=config.lxd_endpoint,
+            endpoint=endpoint,
             cert=(config.lxd_cert_path, config.lxd_key_path),
             verify=False,  # self-signed LXD certs in typical setups
         )
-    return pylxd.Client(endpoint=config.lxd_endpoint)
+    return pylxd.Client(endpoint=endpoint)
 
 
 def check_lxd_reachable() -> bool:
@@ -89,29 +111,120 @@ def get_container(name: str) -> dict | None:
             "architecture": c.architecture,
             "created_at": str(c.created_at),
             "config": dict(c.config) if c.config else {},
+            # Exposed so a description set at creation can be read back;
+            # without it the field would be write-only and unverifiable.
+            "description": getattr(c, "description", "") or "",
         }
     except Exception:
         return None
 
 
-def create_container(name: str, image: str, limits: dict) -> dict:
+def get_container_details(name: str) -> dict | None:
+    """Return full container details including live LXD state and network info.
+
+    This is used for the detail page, where the UI needs IP addresses,
+    runtime state, and the current image metadata. It is deliberately
+    separate from get_container() so list views do not pay the cost of
+    an extra state() call for every container.
+    """
+    try:
+        client = _get_client()
+        c = client.containers.get(name)
+        state = c.state()
+        return {
+            "name": c.name,
+            "status": c.status,
+            "architecture": c.architecture,
+            "created_at": str(c.created_at),
+            "config": dict(c.config) if c.config else {},
+            "description": getattr(c, "description", "") or "",
+            "state": {
+                "status": getattr(state, "status", "Unknown"),
+                "status_code": getattr(state, "status_code", 0),
+                "processes": getattr(state, "processes", 0),
+                "pid": getattr(state, "pid", 0),
+                "cpu": getattr(state, "cpu", {}),
+                "memory": getattr(state, "memory", {}),
+                "disk": getattr(state, "disk", {}),
+                "network": getattr(state, "network", {}),
+            },
+        }
+    except Exception:
+        return None
+
+
+def create_container(
+    name: str,
+    image: str,
+    limits: dict,
+    *,
+    network: str = "",
+    storage_pool: str = "",
+    ephemeral: bool = False,
+    description: str = "",
+) -> dict:
     """Create a new LXD container with the given name, image, and limits.
 
     The limits dict should contain keys like 'limits.memory' and
-    'limits.cpu' matching the LXD config format.
+    'limits.cpu' matching the LXD config format. Autostart is passed in
+    that same dict as 'boot.autostart', since LXD models it as ordinary
+    config rather than a top-level property.
+
+    `network` and `storage_pool` are applied as device overrides. Both are
+    optional and omitted entirely when blank, in which case the container
+    inherits whatever the default profile specifies — which is the
+    behaviour every container had before these arguments existed.
 
     Returns a dict describing the created container.
     Raises on failure (callers should handle this).
     """
     client = _get_client()
+    # Support both image aliases (e.g. 'ubuntu:22.04') and raw image
+    # fingerprints. If the caller supplied a fingerprint, ask LXD to
+    # use it directly rather than a (possibly-missing) alias.
+    source = {"type": "image"}
+    # A simple fingerprint heuristic: hex string of at least 12 chars.
+    # Short fingerprints are commonly used in output listing, so accept
+    # those too.
+    import re
+
+    if isinstance(image, str) and re.fullmatch(r"[0-9a-fA-F]{12,64}", image):
+        source["fingerprint"] = image
+    else:
+        source["alias"] = image
+
     container_config = {
         "name": name,
-        "source": {
-            "type": "image",
-            "alias": image,
-        },
+        "source": source,
         "config": limits,
+        # LXD deletes an ephemeral container as soon as it stops, so this
+        # is a top-level property rather than a config key.
+        "ephemeral": ephemeral,
     }
+
+    # Only set when non-empty: LXD treats a description of "" as an
+    # explicit blank, which is the same as omitting it, but sending the key
+    # unconditionally makes the intent harder to read.
+    if description:
+        container_config["description"] = description
+
+    # Devices are built only for the fields the caller actually supplied.
+    # An empty devices dict is left off completely so the default profile's
+    # eth0/root devices apply untouched — sending a partial override would
+    # replace them rather than merge.
+    devices: dict[str, dict] = {}
+    if network:
+        devices["eth0"] = {"type": "nic", "network": network, "name": "eth0"}
+    if storage_pool:
+        # NOTE: no "size" key here, so this selects which pool the root
+        # disk lives on without imposing a disk quota. See the step summary
+        # — limit_disk_gb is recorded in the DB but has never been applied
+        # to LXD, and starting to enforce it is a behaviour change beyond
+        # the scope of adding pool selection.
+        devices["root"] = {"type": "disk", "pool": storage_pool, "path": "/"}
+    if devices:
+        container_config["devices"] = devices
+
     container = client.containers.create(container_config, wait=True)
     return {
         "name": container.name,
@@ -120,6 +233,126 @@ def create_container(name: str, image: str, limits: dict) -> dict:
         "created_at": str(container.created_at),
         "config": dict(container.config) if container.config else {},
     }
+
+
+# ====================== Host Options ========================================
+# The three listings below back the container-creation form's dropdowns.
+# Each raises LXDUnavailableError rather than returning an empty list on
+# failure, so the caller can tell "this host genuinely has no custom
+# networks" from "we could not ask" — presenting the second as the first
+# would show an empty dropdown that looks authoritative.
+
+
+def list_images() -> list[dict]:
+    """Return the aliases of images cached locally on this host.
+
+    IMPORTANT LIMITATION: this lists images already downloaded to the local
+    image store, NOT everything installable. Remote aliases like
+    'ubuntu:22.04' resolve through remotes, which are a client-side CLI
+    concept that the LXD HTTP API does not expose — so a fresh host with an
+    empty cache returns an empty list even though thousands of images are
+    installable. The creation form therefore keeps its image field
+    free-text and treats this list as suggestions, not as the valid set.
+    """
+    try:
+        client = _get_client()
+        images = []
+        for image in client.images.all():
+            # Prefer reporting aliases when present — that's what admins
+            # normally type. But include an entry for an image that has no
+            # alias by exposing its short fingerprint so the form can still
+            # show and select it.
+            aliases = image.aliases or []
+            if aliases:
+                for alias in aliases:
+                    images.append(
+                        {
+                            "alias": alias.get("name", ""),
+                            "description": (
+                                image.properties.get("description", "")
+                                if image.properties
+                                else ""
+                            ),
+                        }
+                    )
+            else:
+                fp = getattr(image, "fingerprint", "") or ""
+                display = fp[:12] if fp else ""
+                images.append(
+                    {
+                        "alias": display,
+                        "description": (
+                            image.properties.get("description", "")
+                            if image.properties
+                            else ""
+                        ),
+                    }
+                )
+        return sorted(images, key=lambda item: item["alias"])
+    except Exception as exc:
+        raise LXDUnavailableError(f"Cannot list images from LXD: {exc}") from exc
+
+
+def list_networks() -> list[dict]:
+    """Return the networks LXD knows about.
+
+    Includes unmanaged interfaces (the host's physical NICs, bridges
+    created by other software) alongside LXD-managed ones, because a
+    container can legitimately be attached to either. `managed` is passed
+    through so the caller can distinguish them.
+    """
+    try:
+        client = _get_client()
+        return sorted(
+            (
+                {
+                    "name": network.name,
+                    "type": getattr(network, "type", ""),
+                    "managed": bool(getattr(network, "managed", False)),
+                }
+                for network in client.networks.all()
+            ),
+            key=lambda item: item["name"],
+        )
+    except Exception as exc:
+        raise LXDUnavailableError(f"Cannot list networks from LXD: {exc}") from exc
+
+
+def list_storage_pools() -> list[dict]:
+    """Return the storage pools available for a container's root disk."""
+    try:
+        client = _get_client()
+        pools: list[dict] = []
+        gb = 1024 * 1024 * 1024
+
+        for pool in client.storage_pools.all():
+            total_gb = 0.0
+            used_gb = 0.0
+            try:
+                resources = pool.resources.get()
+                space = getattr(resources, "space", {}) or {}
+                total_gb = float(space.get("total") or 0) / gb
+                used_gb = float(space.get("used") or 0) / gb
+            except Exception:
+                # If the per-pool resources shape is unexpected, still return
+                # the pool name so the admin can choose it; disk bounds will
+                # fall back to host-level capacity instead.
+                total_gb = 0.0
+                used_gb = 0.0
+
+            pools.append(
+                {
+                    "name": pool.name,
+                    "driver": getattr(pool, "driver", ""),
+                    "total_gb": round(total_gb, 2),
+                    "used_gb": round(used_gb, 2),
+                    "available_gb": round(max(0.0, total_gb - used_gb), 2),
+                }
+            )
+
+        return sorted(pools, key=lambda item: item["name"])
+    except Exception as exc:
+        raise LXDUnavailableError(f"Cannot list storage pools from LXD: {exc}") from exc
 
 
 def delete_container(name: str) -> None:
@@ -146,9 +379,7 @@ def rename_container(old_name: str, new_name: str) -> None:
     container.rename(new_name, wait=True)
 
 
-def execute_command(
-    name: str, command: list[str]
-) -> tuple[int, str, str]:
+def execute_command(name: str, command: list[str]) -> tuple[int, str, str]:
     """Execute a command inside a running LXD container.
 
     Returns a tuple of (exit_code, stdout, stderr).
@@ -175,8 +406,7 @@ def change_container_state(name: str, action: str) -> None:
     """
     if action not in _STATE_ACTIONS:
         raise ValueError(
-            f"Invalid state action '{action}'. "
-            f"Must be one of: {_STATE_ACTIONS}"
+            f"Invalid state action '{action}'. " f"Must be one of: {_STATE_ACTIONS}"
         )
     client = _get_client()
     container = client.containers.get(name)
@@ -302,6 +532,15 @@ def get_host_resources() -> dict:
 # ====================== Metrics State =======================================
 
 
+def _get_val(obj, key: str, default=None):
+    """Safely get a value from either a dict or an object attribute."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def get_container_state(lxd_name: str) -> dict:
     """Return a flat metrics dict for a running container.
 
@@ -324,44 +563,44 @@ def get_container_state(lxd_name: str) -> dict:
         ) from exc
 
     # CPU: LXD returns total nanoseconds used; we expose it as a float.
-    # The retention/downsampling job (Phase 10) converts successive
-    # snapshots to a percentage average before writing "5m" points.
-    cpu_usage = 0.0
-    if state.cpu and state.cpu.usage is not None:
-        cpu_usage = float(state.cpu.usage)
+    # Handles both dict and object structures polymorphically.
+    cpu = _get_val(state, "cpu")
+    cpu_usage = float(_get_val(cpu, "usage", 0.0) or 0.0)
 
     # Memory in bytes
-    ram_used_mb = 0.0
-    ram_total_mb = 0.0
-    if state.memory:
-        ram_used_mb = float(state.memory.usage or 0) / (1024 * 1024)
-        ram_total_mb = float(state.memory.usage_peak or 0) / (1024 * 1024)
+    mem = _get_val(state, "memory")
+    ram_used_mb = float(_get_val(mem, "usage", 0.0) or 0.0) / (1024 * 1024)
+    ram_peak_mb = float(_get_val(mem, "usage_peak", 0.0) or 0.0) / (1024 * 1024)
 
-    # Disk usage: sum the root disk device
-    disk_used_mb = 0.0
-    if state.disk:
-        root = state.disk.get("root")
-        if root and root.usage is not None:
-            disk_used_mb = float(root.usage) / (1024 * 1024)
+    # Disk usage: look up the root device
+    disk = _get_val(state, "disk")
+    root_disk = _get_val(disk, "root")
+    disk_used_mb = float(_get_val(root_disk, "usage", 0.0) or 0.0) / (1024 * 1024)
 
     # Network I/O: sum across all interfaces
     net_rx_bytes = 0.0
     net_tx_bytes = 0.0
-    if state.network:
-        for iface_data in state.network.values():
-            counters = iface_data.get("counters", {})
-            net_rx_bytes += float(counters.get("bytes_received", 0))
-            net_tx_bytes += float(counters.get("bytes_sent", 0))
+    net = _get_val(state, "network")
+    if net:
+        if isinstance(net, dict) or hasattr(net, "values"):
+            ifaces = net.values()
+        else:
+            ifaces = [net]
+        for iface_data in ifaces:
+            counters = _get_val(iface_data, "counters")
+            net_rx_bytes += float(_get_val(counters, "bytes_received", 0.0) or 0.0)
+            net_tx_bytes += float(_get_val(counters, "bytes_sent", 0.0) or 0.0)
 
     # Process count
     pid_count = 0.0
-    if state.processes is not None:
-        pid_count = float(state.processes)
+    procs = _get_val(state, "processes")
+    if procs is not None:
+        pid_count = float(procs)
 
     return {
         "cpu_usage_ns": cpu_usage,
         "ram_used_mb": ram_used_mb,
-        "ram_peak_mb": ram_total_mb,
+        "ram_peak_mb": ram_peak_mb,
         "disk_used_mb": disk_used_mb,
         "net_rx_bytes": net_rx_bytes,
         "net_tx_bytes": net_tx_bytes,
