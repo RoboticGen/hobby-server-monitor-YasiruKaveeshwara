@@ -55,6 +55,29 @@ def _cookies(result) -> dict:
     return {name: c.value for name, c in result.cookies.items()}
 
 
+def _signin(app_client, code: str):
+    """Drive a full sign-in: hit /login, then the callback with matching state.
+
+    The callback rejects any request whose `state` parameter does not match the
+    cookie the login redirect set (decision 7.1), so it can no longer be called
+    in isolation. Going through /login first is what a real browser does, which
+    means every sign-in below now exercises the state check on its way through
+    rather than routing around it.
+
+    Google's token exchange and ID-token verification are stubbed by the caller;
+    the state value itself is genuine, because it never leaves our own process.
+    """
+    login = app_client.simulate_get("/api/auth/google/login")
+    assert login.status_code == 302
+    state = login.cookies["oauth_state"].value
+
+    return app_client.simulate_get(
+        "/api/auth/google/callback",
+        params={"code": code, "state": state},
+        cookies={"oauth_state": state},
+    )
+
+
 class TestFullLifecycle:
     """Ordered end-to-end flow. Each test builds on the previous one's output."""
 
@@ -84,9 +107,7 @@ class TestFullLifecycle:
             lambda tok: {"email": ADMIN_EMAIL, "email_verified": True},
         )
 
-        result = app_client.simulate_get(
-            "/api/auth/google/callback", params={"code": "fake-auth-code"}
-        )
+        result = _signin(app_client, "fake-auth-code")
 
         # Redirects to the frontend on success
         assert result.status_code == 302
@@ -144,9 +165,7 @@ class TestFullLifecycle:
             lambda tok: {"email": "stranger@example.com"},
         )
 
-        result = app_client.simulate_get(
-            "/api/auth/google/callback", params={"code": "x"}
-        )
+        result = _signin(app_client, "x")
         assert result.status_code == 403
         assert repo.get_user_by_email("stranger@example.com") is None
 
@@ -194,9 +213,7 @@ class TestFullLifecycle:
             lambda tok: {"email": USER_EMAIL},
         )
 
-        result = app_client.simulate_get(
-            "/api/auth/google/callback", params={"code": "y"}
-        )
+        result = _signin(app_client, "y")
         assert result.status_code == 302
 
         user = repo.get_user_by_id(STATE["user_id"])
@@ -848,9 +865,7 @@ class TestFullLifecycle:
             lambda tok: {"email": USER_EMAIL},
         )
 
-        result = app_client.simulate_get(
-            "/api/auth/google/callback", params={"code": "z"}
-        )
+        result = _signin(app_client, "z")
         assert result.status_code == 403
         # Still revoked — a failed sign-in must not reactivate the account.
         assert repo.get_user_by_id(STATE["user_id"])["status"] == "revoked"

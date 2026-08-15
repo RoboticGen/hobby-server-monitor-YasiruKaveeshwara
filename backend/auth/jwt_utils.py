@@ -81,3 +81,14 @@ def hash_refresh_token(token: str) -> str:
     SHA-256 hash, which is computationally infeasible.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def generate_oauth_state() -> str:
+    """Generate a random OAuth 2.0 `state` value.
+
+    Same CSPRNG and length as the refresh token: this value is the only thing
+    binding a callback to a sign-in that this browser actually began, so it
+    must not be guessable. It is never stored server-side — it travels to
+    Google and back, and is compared against a cookie the browser holds.
+    """
+    return secrets.token_urlsafe(32)

@@ -2,22 +2,25 @@
 Authentication route resources.
 
 Handles the Google OAuth2 login flow, session management, and current-user
-queries. These four endpoints are the only auth-related entry points:
+queries. These five endpoints are the only auth-related entry points:
 
-  GET  /api/auth/google/login    → redirect to Google
-  GET  /api/auth/google/callback → exchange code, set session cookies
+  GET  /api/auth/google/login    → mint OAuth state, redirect to Google
+  GET  /api/auth/google/callback → verify state, exchange code, set cookies
   GET  /api/auth/me              → return current user info or 401
+  POST /api/auth/refresh         → reissue an access token from the refresh one
   POST /api/auth/logout          → revoke session, clear cookies
 """
 
 from datetime import datetime, timedelta, timezone
 import logging
+import secrets
 
 import falcon
 
 from backend.auth.jwt_utils import (
     create_access_token,
     decode_access_token,
+    generate_oauth_state,
     generate_refresh_token,
     hash_refresh_token,
 )
@@ -44,6 +47,14 @@ _REFRESH_TOKEN_LIFETIME_DAYS = 7
 # token (opaque, hashed server-side).
 _ACCESS_COOKIE = "access_token"
 _REFRESH_COOKIE = "refresh_token"
+
+# Holds the OAuth state value between the login redirect and the callback.
+_STATE_COOKIE = "oauth_state"
+
+# The state cookie only has to outlive one trip to Google's consent screen.
+# Ten minutes is generous for a human typing a password and a 2FA code, and
+# short enough that an abandoned value does not linger in the cookie jar.
+_STATE_COOKIE_LIFETIME_SECONDS = 600
 
 
 def _session_is_expired(expires_at: str) -> bool:
@@ -123,6 +134,97 @@ def _clear_session_cookies(resp: falcon.Response) -> None:
     resp.unset_cookie(_REFRESH_COOKIE, path="/", same_site="Lax")
 
 
+def _set_state_cookie(resp: falcon.Response, state: str) -> None:
+    """Store the OAuth state value so the callback can verify it.
+
+    SameSite=Lax rather than Strict: the callback arrives as a top-level
+    navigation from accounts.google.com, which is cross-site. Lax sends the
+    cookie on exactly that kind of navigation; Strict would withhold it and
+    every legitimate sign-in would fail state verification.
+
+    The lifetime is deliberately short — this cookie is only needed for the
+    seconds between leaving for Google and coming back, and a stale value
+    left in the jar is one more thing that could be replayed.
+    """
+    resp.set_cookie(
+        _STATE_COOKIE,
+        state,
+        max_age=_STATE_COOKIE_LIFETIME_SECONDS,
+        secure=config.session_cookie_secure,
+        http_only=True,
+        same_site="Lax",
+        path="/",
+    )
+
+
+def _clear_state_cookie(resp: falcon.Response) -> None:
+    """Expire the OAuth state cookie once it has been consumed."""
+    resp.unset_cookie(_STATE_COOKIE, path="/", same_site="Lax")
+
+
+def _verify_state(req: falcon.Request, resp: falcon.Response) -> None:
+    """Require the callback's `state` to match the cookie set at login.
+
+    This is the login-CSRF defence. Without it the callback accepts any
+    authorization code from anyone: an attacker starts a sign-in as themselves,
+    stops at the callback, and gets the victim to load that URL (an image tag,
+    a link, a redirect). The victim's browser then completes a flow it never
+    started and ends up silently signed in as the attacker — every container
+    they create and every file they upload lands in the attacker's account,
+    which the attacker can log into and read.
+
+    The random state ties the two halves of the flow together. Google echoes it
+    back unmodified, and only a browser that visited our login endpoint holds
+    the matching cookie, so a callback the victim did not initiate cannot
+    produce one. An attacker can set the query parameter to anything, but
+    cannot write an httpOnly cookie on our origin.
+
+    Compared with `secrets.compare_digest` rather than `==` to keep the
+    comparison constant-time. Timing is a marginal concern for a value with 256
+    bits of entropy, but the correct primitive costs nothing here.
+
+    On success the cookie is cleared, making each state value single-use: a
+    completed callback cannot be replayed by resending the same URL. It is
+    deliberately *not* cleared on failure — a rejected attempt never revealed
+    the value, and clearing it would let a forged callback cancel a legitimate
+    sign-in that is still in flight. The 10-minute lifetime cleans up instead.
+
+    One cookie holds one value, so starting a second sign-in overwrites the
+    first and only the newer one can complete. Two login popups open at once is
+    the only way to hit that, and the failure is a 400 with a "sign in again"
+    message, so the accepted cost is a retry rather than a stuck user.
+    """
+    cookie_state = req.cookies.get(_STATE_COOKIE)
+    param_state = req.get_param("state")
+
+    # Both sides must be present. A missing cookie means the browser never
+    # visited the login endpoint (or waited too long); a missing parameter
+    # means the callback was hand-made. Neither can be treated as a match --
+    # comparing two empty values would succeed and defeat the whole check.
+    if not cookie_state or not param_state:
+        log.warning(
+            "OAuth callback rejected: state missing (cookie_present=%s, "
+            "param_present=%s)",
+            bool(cookie_state),
+            bool(param_state),
+        )
+        raise falcon.HTTPBadRequest(
+            title="Invalid sign-in request",
+            description="This sign-in link did not come from a login started "
+            "in this browser, or it has expired. Please sign in again.",
+        )
+
+    if not secrets.compare_digest(cookie_state, param_state):
+        log.warning("OAuth callback rejected: state mismatch")
+        raise falcon.HTTPBadRequest(
+            title="Invalid sign-in request",
+            description="This sign-in link did not come from a login started "
+            "in this browser, or it has expired. Please sign in again.",
+        )
+
+    _clear_state_cookie(resp)
+
+
 class GoogleLoginResource:
     """Redirects the browser to Google's OAuth2 consent screen.
 
@@ -132,7 +234,13 @@ class GoogleLoginResource:
 
     def on_get(self, req: falcon.Request, resp: falcon.Response) -> None:
         """Issue a 302 redirect to Google's authorization URL."""
-        raise falcon.HTTPFound(build_google_auth_url())
+        # One random value per sign-in attempt, sent to Google and stored in a
+        # cookie. The callback requires the two to match, which is what proves
+        # the callback belongs to a flow this browser started. See
+        # `_verify_state` for what this defends against.
+        state = generate_oauth_state()
+        _set_state_cookie(resp, state)
+        raise falcon.HTTPFound(build_google_auth_url(state))
 
 
 class GoogleCallbackResource:
@@ -146,6 +254,12 @@ class GoogleCallbackResource:
 
     def on_get(self, req: falcon.Request, resp: falcon.Response) -> None:
         """Process the Google OAuth callback and establish a session."""
+        # State is verified before the code is touched. An unverified callback
+        # must cost nothing, so the authorization code is not exchanged --
+        # doing so would let an attacker burn a code and reach Google on every
+        # forged request.
+        _verify_state(req, resp)
+
         code = req.get_param("code")
         if not code:
             raise falcon.HTTPBadRequest(

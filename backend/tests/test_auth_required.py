@@ -4,16 +4,23 @@ Tests for authentication-related code.
 Started with a basic test for the OAuth URL builder.
 Extended with JWT round-trip tests.
 Extended with the "every route requires auth" test.
+Extended with the OAuth state value's generation properties.
 """
 
 from backend.auth.oauth import build_google_auth_url
 from backend.auth.jwt_utils import (
     create_access_token,
     decode_access_token,
+    generate_oauth_state,
     generate_refresh_token,
     hash_refresh_token,
 )
 from backend.config import config
+
+# Every call below passes a state value because build_google_auth_url requires
+# one — there is no default, so the login-CSRF defense cannot be omitted by
+# accident (decision 7.1).
+_STATE = "test-state-value"
 
 
 class TestBuildGoogleAuthUrl:
@@ -21,12 +28,12 @@ class TestBuildGoogleAuthUrl:
 
     def test_url_contains_client_id(self):
         """The generated URL must include our configured client ID."""
-        url = build_google_auth_url()
+        url = build_google_auth_url(_STATE)
         assert config.google_client_id in url
 
     def test_url_contains_scopes(self):
         """The URL must request the openid, email, and profile scopes."""
-        url = build_google_auth_url()
+        url = build_google_auth_url(_STATE)
         # Scopes are URL-encoded as "openid+email+profile" or "openid%20email%20profile"
         assert "openid" in url
         assert "email" in url
@@ -34,14 +41,43 @@ class TestBuildGoogleAuthUrl:
 
     def test_url_contains_redirect_uri(self):
         """The URL must include our configured redirect URI."""
-        url = build_google_auth_url()
+        url = build_google_auth_url(_STATE)
         # The redirect URI is URL-encoded, but the host portion should appear
         assert "callback" in url
 
     def test_url_starts_with_google_endpoint(self):
         """The URL should point to Google's OAuth2 authorization endpoint."""
-        url = build_google_auth_url()
+        url = build_google_auth_url(_STATE)
         assert url.startswith("https://accounts.google.com/")
+
+    def test_url_carries_the_state_value(self):
+        """The state must reach Google, or it cannot be echoed back to us.
+
+        Asserts on the encoded query parameter rather than mere substring
+        presence: `state` appearing anywhere in the URL would also be satisfied
+        by the scope list, which is not the same claim.
+        """
+        url = build_google_auth_url("abc123")
+        assert "state=abc123" in url
+
+
+class TestGenerateOAuthState:
+    """Properties the state value has to have to be worth checking."""
+
+    def test_two_calls_differ(self):
+        """A reused state would let one captured callback URL be replayed."""
+        assert generate_oauth_state() != generate_oauth_state()
+
+    def test_state_is_long_enough_to_be_unguessable(self):
+        """32 bytes of CSPRNG output encodes to 43 URL-safe characters."""
+        state = generate_oauth_state()
+        assert len(state) >= 43
+
+    def test_state_is_url_safe(self):
+        """The value is round-tripped through a query string, so it must
+        survive URL encoding unchanged."""
+        state = generate_oauth_state()
+        assert all(c.isalnum() or c in "-_" for c in state), state
 
 
 class TestJWTRoundTrip:
@@ -70,9 +106,7 @@ class TestJWTRoundTrip:
             "exp": now - timedelta(hours=1),
             "iat": now - timedelta(hours=2),
         }
-        expired_token = pyjwt.encode(
-            payload, config.jwt_secret, algorithm="HS256"
-        )
+        expired_token = pyjwt.encode(payload, config.jwt_secret, algorithm="HS256")
 
         result = decode_access_token(expired_token)
         assert result is None
@@ -203,9 +237,9 @@ class TestEveryRouteRequiresAuth:
         for method, path in PUBLIC_ROUTES:
             simulate = getattr(client, f"simulate_{method.lower()}")
             result = simulate(path)
-            assert result.status_code != 401, (
-                f"{method} {path} returned 401 but is supposed to be public"
-            )
+            assert (
+                result.status_code != 401
+            ), f"{method} {path} returned 401 but is supposed to be public"
 
     def test_me_returns_401_without_auth(self):
         """GET /api/auth/me specifically must return 401 without a cookie."""
