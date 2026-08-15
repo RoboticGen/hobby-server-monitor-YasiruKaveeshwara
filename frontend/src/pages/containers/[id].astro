@@ -146,6 +146,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
         limit_cpu: number;
         limit_disk_gb: number;
         deleted_at: string | null;
+        created_at?: string;
         lxd_status?: string;
         lxd_image?: string;
         lxd_ip_addresses?: string[];
@@ -217,7 +218,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
               osImage: container.lxd_image || container.image,
               ipAddresses: container.lxd_ip_addresses || [],
               architecture: container.lxd_architecture || "",
-              createdAt: container.lxd_created_at || container.created_at,
+              createdAt: container.lxd_created_at || container.created_at || "",
               initialState: container.lxd_status || "Unknown",
               ramAllocatedMb: container.limit_ram_mb,
               cpuAllocated: container.limit_cpu,

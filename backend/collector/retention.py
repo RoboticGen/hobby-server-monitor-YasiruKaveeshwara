@@ -1,8 +1,8 @@
 """
 Retention and downsampling job for TinyFlux.
 
- "Raw 10-second points are kept for 24 hours. Points older than 24 hours are downsampled into 5-minute averages. 
- Points older than 7 days are downsampled into 1-hour averages. 
+ "Raw 10-second points are kept for 24 hours. Points older than 24 hours are downsampled into 5-minute averages.
+ Points older than 7 days are downsampled into 1-hour averages.
  Anything older than 90 days is deleted outright."
 
 TinyFlux has no built-in retention or TTL mechanism — unlike InfluxDB or
@@ -29,9 +29,9 @@ from backend.tsdb.store import get_store, remove_points, write_point
 log = logging.getLogger(__name__)
 
 # thresholds
-_RAW_MAX_AGE = timedelta(hours=24)       # raw points older than this → 5m
-_FIVE_MIN_MAX_AGE = timedelta(days=7)    # 5m points older than this → 1h
-_ABSOLUTE_MAX_AGE = timedelta(days=90)   # anything older → delete outright
+_RAW_MAX_AGE = timedelta(hours=24)  # raw points older than this → 5m
+_FIVE_MIN_MAX_AGE = timedelta(days=7)  # 5m points older than this → 1h
+_ABSOLUTE_MAX_AGE = timedelta(days=90)  # anything older → delete outright
 
 # Bucket widths for downsampling
 _FIVE_MIN_BUCKET = timedelta(minutes=5)
@@ -63,8 +63,7 @@ def _average_fields(points: list) -> dict:
         keys.update(k for k, v in p.fields.items() if isinstance(v, (int, float)))
 
     return {
-        key: sum(p.fields.get(key, 0.0) for p in points) / len(points)
-        for key in keys
+        key: sum(p.fields.get(key, 0.0) for p in points) / len(points) for key in keys
     }
 
 
@@ -157,10 +156,7 @@ def _prune_old_points(container_id: str, now: datetime) -> None:
 
     cutoff = now - _ABSOLUTE_MAX_AGE
 
-    removed = remove_points(
-        (Tag.container_id == container_id)
-        & (Time < cutoff)
-    )
+    removed = remove_points((Tag.container_id == container_id) & (Time < cutoff))
     if removed:
         log.info(
             "Pruned %d points older than %d days for container %s",

@@ -285,7 +285,7 @@ export default function ContainerResourceGraphs({
 							type='button'
 							key={m.value}
 							className={`mode-btn ${viewMode === m.value ? "active" : ""}`}
-							aria-pressed={String(m.value === viewMode)}
+							aria-pressed={viewMode === m.value}
 							onClick={() => setViewMode(m.value)}>
 							{m.label}
 						</button>

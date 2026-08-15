@@ -5,12 +5,12 @@ After=network.target lxd.service
 [Service]
 # Dedicated low-privilege OS user belonging to lxd group (decision 7.4)
 User=hsm-runner
-Group=lxd
-WorkingDirectory=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara
-EnvironmentFile=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara/backend/.env
+# Replace /opt/hobby-server-monitor with your actual project installation directory
+WorkingDirectory=/opt/hobby-server-monitor
+EnvironmentFile=/opt/hobby-server-monitor/backend/.env
 
 # Run the independent collector loop
-ExecStart=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara/.venv/bin/python -m backend.collector.collector
+ExecStart=/opt/hobby-server-monitor/.venv/bin/python -m backend.collector.collector
 Restart=on-failure
 
 [Install]

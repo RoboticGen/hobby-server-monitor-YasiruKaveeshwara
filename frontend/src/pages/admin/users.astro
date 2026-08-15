@@ -87,17 +87,6 @@ import "../../styles/global.css";
         disk_gb: number;
       }
 
-      interface UserRecord {
-        id: string;
-        email: string;
-        role: string;
-        status: string;
-        quota_ram_mb: number;
-        quota_cpu: number;
-        quota_disk_gb: number;
-        allocation: Allocation;
-      }
-
       interface UserListResponse {
         users: UserRecord[];
       }

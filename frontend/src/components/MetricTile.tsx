@@ -29,10 +29,10 @@ export interface MetricTileProps {
 	containerId: string;
 	name: string;
 	state: string;
-	osImage: string;
-	ipAddresses: string[];
-	createdAt: string;
-	processCount: number;
+	osImage?: string;
+	ipAddresses?: string[];
+	createdAt?: string;
+	processCount?: number;
 	ramAllocatedMb: number;
 	diskAllocatedGb: number;
 	initialPoint?: MetricPoint | null;
@@ -98,10 +98,10 @@ export default function MetricTile({
 	containerId,
 	name,
 	state,
-	osImage,
-	ipAddresses,
-	createdAt,
-	processCount,
+	osImage = "Linux",
+	ipAddresses = [],
+	createdAt = "",
+	processCount = 0,
 	ramAllocatedMb,
 	diskAllocatedGb,
 	initialPoint = null,

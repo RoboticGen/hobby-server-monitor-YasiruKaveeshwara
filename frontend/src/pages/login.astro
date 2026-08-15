@@ -48,7 +48,7 @@ import "../styles/global.css";
 
     <script>
       import { apiFetch, ApiError } from "../lib/api";
-      import { clearCachedSession, setCachedSession } from "../lib/session";
+      import { clearCachedSession, setCachedSession, syncSession } from "../lib/session";
 
       // On login page, verify directly with backend whether an active session exists
       apiFetch("/api/auth/me")

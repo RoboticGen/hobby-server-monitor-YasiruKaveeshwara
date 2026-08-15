@@ -5,12 +5,12 @@ After=network.target lxd.service
 [Service]
 # We use a dedicated low-privilege user as per decision 7.4
 User=hsm-runner
-Group=lxd
-WorkingDirectory=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara
-EnvironmentFile=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara/backend/.env
+# Replace /opt/hobby-server-monitor with your actual project installation directory
+WorkingDirectory=/opt/hobby-server-monitor
+EnvironmentFile=/opt/hobby-server-monitor/backend/.env
 
 # Using Waitress to serve the Falcon app per Phase 24 instructions
-ExecStart=/home/yasiru/projects/hobby-server-monitor-YasiruKaveeshwara/.venv/bin/waitress-serve --port=5000 --call backend.app:create_app
+ExecStart=/opt/hobby-server-monitor/.venv/bin/waitress-serve --port=8000 --call backend.app:create_app
 Restart=on-failure
 
 [Install]

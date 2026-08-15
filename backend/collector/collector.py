@@ -117,7 +117,8 @@ def run_collector_loop() -> None:
         now = datetime.now(tz=timezone.utc)
         if (
             _last_retention_run is None
-            or (now - _last_retention_run).total_seconds() >= _retention_interval_seconds
+            or (now - _last_retention_run).total_seconds()
+            >= _retention_interval_seconds
         ):
             try:
                 log.info("Running hourly retention pass")
