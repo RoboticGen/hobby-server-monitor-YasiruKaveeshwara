@@ -5,7 +5,7 @@
  * - Direct inline shell prompt ($ / #) with blinking cursor
  * - Command history with Up / Down arrow key navigation
  * - Built-in shell utilities (clear, history, help, reset)
- * - POSIX quote & pipeline parsing
+ * - POSIX quote parsing into an argv array (no shell — see parseCommand)
  * - Tab autocompletion for common commands
  * - Keyboard shortcuts (Ctrl+L to clear, Ctrl+C to cancel)
  * - Click-to-focus terminal surface
@@ -122,17 +122,40 @@ const AUTOCOMPLETE_COMMANDS = [
 	"gzip",
 ];
 
-/** Parse command string into arguments, supporting quotes and shell pipelines */
-function parseCommand(input: string): string[] {
+/**
+ * Characters that carry meaning only to a shell interpreter.
+ *
+ * There is no shell on the execution path: the backend hands the argv array
+ * straight to LXD. So an *unquoted* operator here cannot be honoured, and the
+ * only two options are to refuse it or to smuggle in a shell to interpret it.
+ * Refusing is the entire injection defense, so refusing is what happens.
+ */
+const SHELL_OPERATORS = ["|", "&", ">", "<", ";"];
+
+/**
+ * Outcome of parsing one input line into an argv array.
+ *
+ * A discriminated union rather than a thrown error or a `string[] | null`,
+ * because the caller has to render the *reason* back into the terminal log —
+ * a bare failure would leave the user staring at a line that did nothing.
+ */
+export type ParseResult = { ok: true; argv: string[] } | { ok: false; reason: string };
+
+/**
+ * Split a command line into an argv array, refusing shell syntax.
+ *
+ * Quoting is respected, and that distinction is the whole point: a *quoted*
+ * operator is ordinary text and is passed through as one literal argv element
+ * (`echo "a; b"` is a legitimate command), while an *unquoted* one is shell
+ * syntax that this transport cannot express and is refused. That mirrors the
+ * backend exactly — see the pair of tests in test_security.py that require
+ * string commands to be rejected but metacharacters inside a single element
+ * to survive unsplit.
+ */
+function parseCommand(input: string): ParseResult {
 	const trimmed = input.trim();
-	if (!trimmed) return [];
+	if (!trimmed) return { ok: false, reason: "No command to run." };
 
-	// If the user uses shell operators (pipes, redirects, chains), wrap in sh -c
-	if (/[|&><;]/.test(trimmed)) {
-		return ["sh", "-c", trimmed];
-	}
-
-	// POSIX-style quote parser
 	const tokens: string[] = [];
 	let current = "";
 	let inSingle = false;
@@ -163,6 +186,18 @@ function parseCommand(input: string): string[] {
 			continue;
 		}
 
+		// Checked before the whitespace split so the operator is caught while
+		// the quote state that makes it syntax-or-data is still known.
+		if (!inSingle && !inDouble && SHELL_OPERATORS.includes(char)) {
+			return {
+				ok: false,
+				reason:
+					`Shell operator '${char}' is not supported. Commands run as a direct argv array ` +
+					`with no shell, so pipes, redirects and chains cannot be interpreted. ` +
+					`Quote it to send it as literal text, or run one command at a time.`,
+			};
+		}
+
 		if (/\s/.test(char) && !inSingle && !inDouble) {
 			if (current.length > 0) {
 				tokens.push(current);
@@ -174,11 +209,22 @@ function parseCommand(input: string): string[] {
 		current += char;
 	}
 
+	// Previously an unclosed quote silently dropped the quote character and ran
+	// anyway, so `echo "hi` became ["echo", "hi"]. Saying so beats guessing.
+	if (inSingle || inDouble) {
+		return { ok: false, reason: "Unterminated quote in command." };
+	}
+
 	if (current.length > 0) {
 		tokens.push(current);
 	}
 
-	return tokens.length > 0 ? tokens : [trimmed];
+	// Reachable for input that is entirely empty quotes, e.g. `''`.
+	if (tokens.length === 0) {
+		return { ok: false, reason: "No command to run." };
+	}
+
+	return { ok: true, argv: tokens };
 }
 
 function trimTrailingNewlines(text: string): string {
@@ -316,7 +362,10 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 				"",
 				"Quick Examples:",
 				"  uname -a, free -h, df -h /, ps aux, ip addr, cat /etc/os-release",
-				"  Shell pipes & operators like 'ps aux | grep root' are supported.",
+				"",
+				"Note: commands run as a direct argv array with no shell, so the",
+				"operators  |  &  >  <  ;  are refused. Quote them to send literal",
+				'text (echo "a; b"), or run one command at a time.',
 			].join("\n");
 
 			appendEntry({
@@ -330,7 +379,20 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 			return;
 		}
 
-		const argv = parseCommand(trimmed);
+		const parsed = parseCommand(trimmed);
+		if (!parsed.ok) {
+			// Refused before any network call — the command never reaches the
+			// container, and the user sees why rather than a dead prompt.
+			appendEntry({
+				kind: "error",
+				argv: [],
+				rawCommand: trimmed,
+				message: parsed.reason,
+			});
+			return;
+		}
+
+		const argv = parsed.argv;
 		setRunning(true);
 
 		try {
@@ -483,7 +545,7 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 
 				<div className='titlebar-center mono'>
 					<span className='shell-icon'>⚡</span>
-					<span className='shell-title'>{promptUser}: ~ (sh)</span>
+					<span className='shell-title'>{promptUser}: ~ (no shell)</span>
 				</div>
 
 				<div className='titlebar-actions'>
