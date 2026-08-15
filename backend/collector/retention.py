@@ -1,7 +1,7 @@
 """
 Retention and downsampling job for TinyFlux.
 
- "Raw 10-second points are kept for 24 hours. Points older than 24 hours are downsampled into 5-minute averages.
+ "Raw points are kept for 24 hours. Points older than 24 hours are downsampled into 5-minute averages.
  Points older than 7 days are downsampled into 1-hour averages.
  Anything older than 90 days is deleted outright."
 

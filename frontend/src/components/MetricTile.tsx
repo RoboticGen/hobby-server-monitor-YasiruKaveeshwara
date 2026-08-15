@@ -175,7 +175,14 @@ export default function MetricTile({
 					<h3 className='tile-title' title={name}>
 						{name}
 					</h3>
-					<span className={`status-badge ${normalizedState}`}>{state === "Unknown" ? "Error" : state}</span>
+					<div className='tile-header-badges'>
+						{normalizedState === "running" && (
+							<span className='live-badge-ticker'>
+								<span className='live-dot'></span> LIVE
+							</span>
+						)}
+						<span className={`status-badge ${normalizedState}`}>{state === "Unknown" ? "Error" : state}</span>
+					</div>
 				</div>
 
 				<div className='tile-meta'>

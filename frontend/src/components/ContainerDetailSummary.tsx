@@ -65,6 +65,20 @@ function computeCpuPercent(previous: MetricPoint, current: MetricPoint): number 
 	return (busyNs / (elapsedMs * 1_000_000)) * 100;
 }
 
+function computeRate(
+	previous: MetricPoint,
+	current: MetricPoint,
+	field: "net_rx_bytes" | "net_tx_bytes",
+): number | null {
+	const elapsedMs = Date.parse(current.time) - Date.parse(previous.time);
+	if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return null;
+
+	const delta = current[field] - previous[field];
+	if (!Number.isFinite(delta) || delta < 0) return null;
+
+	return delta / (elapsedMs / 1000);
+}
+
 export default function ContainerDetailSummary({
 	containerId,
 	lxdName,
@@ -80,6 +94,8 @@ export default function ContainerDetailSummary({
 }: ContainerDetailSummaryProps) {
 	const [point, setPoint] = useState<MetricPoint | null>(null);
 	const [cpuPercent, setCpuPercent] = useState<number | null>(null);
+	const [rxRate, setRxRate] = useState<number | null>(null);
+	const [txRate, setTxRate] = useState<number | null>(null);
 	const [status, setStatus] = useState(initialState);
 	const [currentOsImage, setCurrentOsImage] = useState(osImage);
 	const [currentIpAddresses, setCurrentIpAddresses] = useState(ipAddresses);
@@ -240,6 +256,36 @@ export default function ContainerDetailSummary({
 	useEffect(() => {
 		let cancelled = false;
 
+		async function initAndPoll(): Promise<void> {
+			try {
+				// Seed initial 2 points immediately so rates can be computed on first render
+				const recent = await apiFetch<{ container_id: string; count: number; points: MetricPoint[] }>(
+					`/api/metrics/recent?container=${encodeURIComponent(containerId)}&limit=2`,
+				).catch(() => null);
+
+				if (cancelled) return;
+
+				if (recent && recent.points.length > 0) {
+					const pts = recent.points;
+					const latestPt = pts[pts.length - 1];
+					setPoint(latestPt);
+					previousPoint.current = latestPt;
+
+					if (pts.length >= 2) {
+						const prevPt = pts[pts.length - 2];
+						const nextCpu = computeCpuPercent(prevPt, latestPt);
+						const nextRx = computeRate(prevPt, latestPt, "net_rx_bytes");
+						const nextTx = computeRate(prevPt, latestPt, "net_tx_bytes");
+						if (nextCpu !== null) setCpuPercent(nextCpu);
+						if (nextRx !== null) setRxRate(nextRx);
+						if (nextTx !== null) setTxRate(nextTx);
+					}
+				}
+			} catch {
+				// Fallback to regular poll
+			}
+		}
+
 		async function poll(): Promise<void> {
 			try {
 				const data = await apiFetch<{ container_id: string; point: MetricPoint | null }>(
@@ -249,13 +295,16 @@ export default function ContainerDetailSummary({
 				if (cancelled) return;
 
 				if (data.point === null) {
-					setPoint(null);
 					return;
 				}
 
-				if (previousPoint.current) {
+				if (previousPoint.current && previousPoint.current.time !== data.point.time) {
 					const nextCpu = computeCpuPercent(previousPoint.current, data.point);
+					const nextRx = computeRate(previousPoint.current, data.point, "net_rx_bytes");
+					const nextTx = computeRate(previousPoint.current, data.point, "net_tx_bytes");
 					if (nextCpu !== null) setCpuPercent(nextCpu);
+					if (nextRx !== null) setRxRate(nextRx);
+					if (nextTx !== null) setTxRate(nextTx);
 				}
 
 				previousPoint.current = data.point;
@@ -265,7 +314,10 @@ export default function ContainerDetailSummary({
 			}
 		}
 
-		void poll();
+		void initAndPoll().then(() => {
+			if (!cancelled) void poll();
+		});
+
 		const timerId = window.setInterval(poll, 5000);
 		return () => {
 			cancelled = true;
@@ -373,7 +425,12 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon cpu-icon'>⚡</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>CPU UTILIZATION</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>CPU UTILIZATION</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>
 								{cpuPercent === null ? "Measuring…" : `${cpuPercent.toFixed(1)}%`}
 							</span>
@@ -396,7 +453,12 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon ram-icon'>🧠</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>RAM ALLOCATION</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>RAM ALLOCATION</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>{point ? `${point.ram_used_mb.toFixed(0)} MB` : "0 MB"}</span>
 						</div>
 					</div>
@@ -414,7 +476,12 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon disk-icon'>💾</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>DISK STORAGE</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>DISK STORAGE</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>{point ? `${diskUsedGb.toFixed(2)} GB` : "0 GB"}</span>
 						</div>
 					</div>
@@ -432,17 +499,36 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon net-icon'>🌐</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>NETWORK & PROCS</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>NETWORK & PROCS</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>{point ? `${point.pid_count.toFixed(0)} PIDs` : "0 PIDs"}</span>
 						</div>
 					</div>
 					<div className='net-throughput-row mono'>
-						<span>↓ RX: {point ? formatBytes(point.net_rx_bytes) : "0 B"}</span>
-						<span>↑ TX: {point ? formatBytes(point.net_tx_bytes) : "0 B"}</span>
+						<span>
+							↓ RX:{" "}
+							{rxRate !== null ?
+								`${formatBytes(rxRate)}`
+							: point ?
+								formatBytes(point.net_rx_bytes)
+							:	"0 B"}
+						</span>
+						<span>
+							↑ TX:{" "}
+							{txRate !== null ?
+								`${formatBytes(txRate)}`
+							: point ?
+								formatBytes(point.net_tx_bytes)
+							:	"0 B"}
+						</span>
 					</div>
 					<div className='gauge-footer mono'>
 						<span>Architecture: {architecture}</span>
-						<span>Daemon Synced</span>
+						<span>Live Polling</span>
 					</div>
 				</div>
 			</div>

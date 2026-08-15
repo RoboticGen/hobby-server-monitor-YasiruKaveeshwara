@@ -519,8 +519,8 @@ class TestFullLifecycle:
     def test_20_history_window_maps_to_the_right_resolution(self, app_client):
         """Each window returns its pre-aggregated resolution (7.9).
 
-        A 24h or 7d chart must never be served from raw 10-second points —
-        that would push 8,640 points at the browser.
+        A 24h or 7d chart must never be served from raw points — a day of
+        them is 17,280 samples at the shipped 5-second interval.
         """
         expected = {"1h": "raw", "24h": "5m", "7d": "1h"}
         for window, resolution in expected.items():

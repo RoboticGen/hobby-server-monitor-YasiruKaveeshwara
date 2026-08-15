@@ -290,7 +290,7 @@ export default function ContainerResourceGraphs({
 		};
 	}, [containerId, viewMode]);
 
-	const points = viewMode === "live" ? livePoints : (bundleHistory?.points ?? []);
+	const points = viewMode === "live" ? livePoints.slice(-30) : (bundleHistory?.points ?? []);
 
 	const cpuSeries = useMemo(() => buildCpuSeries(points), [points]);
 	const ramSeries = useMemo(() => buildValueSeries(points, (r) => r.ram_used_mb), [points]);
@@ -316,7 +316,11 @@ export default function ContainerResourceGraphs({
 		<section className='resource-graphs-section' aria-label='Resource usage graphs'>
 			<div className='graphs-toolbar'>
 				<div className='toolbar-left'>
-					<span className='pulse-dot'></span>
+					{viewMode === "live" ?
+						<span className='live-badge-ticker'>
+							<span className='live-dot'></span> LIVE (5s)
+						</span>
+					:	<span className='pulse-dot'></span>}
 					<span className='toolbar-status'>{statusMessage}</span>
 				</div>
 				<div className='view-mode-selector' role='group' aria-label='View mode'>
@@ -352,7 +356,14 @@ export default function ContainerResourceGraphs({
 						<span className='graph-limit-tag'>{cpuAllocated} core(s)</span>
 					</header>
 					{cpuSeries.length > 0 ?
-						<HistoryChart points={cpuSeries} height={130} color='#06b6d4' />
+						<HistoryChart
+							points={cpuSeries}
+							height={150}
+							color='#0284c7'
+							formatValue={(v) => `${v.toFixed(1)}%`}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>
@@ -371,7 +382,14 @@ export default function ContainerResourceGraphs({
 						<span className='graph-limit-tag'>{ramAllocatedMb} MB limit</span>
 					</header>
 					{ramSeries.length > 0 ?
-						<HistoryChart points={ramSeries} height={130} color='#38bdf8' />
+						<HistoryChart
+							points={ramSeries}
+							height={150}
+							color='#059669'
+							formatValue={(v) => `${v.toFixed(0)} MB`}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>
@@ -392,7 +410,14 @@ export default function ContainerResourceGraphs({
 						<span className='graph-limit-tag'>{diskAllocatedGb} GB limit</span>
 					</header>
 					{diskSeries.length > 0 ?
-						<HistoryChart points={diskSeries} height={130} color='#8b5cf6' />
+						<HistoryChart
+							points={diskSeries}
+							height={150}
+							color='#8b5cf6'
+							formatValue={(v) => `${v.toFixed(2)} GB`}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>
@@ -415,7 +440,14 @@ export default function ContainerResourceGraphs({
 						<span className='graph-limit-tag'>RX + TX Aggregate</span>
 					</header>
 					{networkSeries.length > 0 ?
-						<HistoryChart points={networkSeries} height={130} color='#10b981' />
+						<HistoryChart
+							points={networkSeries}
+							height={150}
+							color='#d97706'
+							formatValue={formatBytes}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>

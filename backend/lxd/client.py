@@ -593,21 +593,43 @@ def get_container_state(lxd_name: str) -> dict:
     ram_used_mb = float(_get_val(mem, "usage", 0.0) or 0.0) / (1024 * 1024)
     ram_peak_mb = float(_get_val(mem, "usage_peak", 0.0) or 0.0) / (1024 * 1024)
 
-    # Disk usage: look up the root device
+    # Disk usage: look up the root device or sum all devices
     disk = _get_val(state, "disk")
-    root_disk = _get_val(disk, "root")
-    disk_used_mb = float(_get_val(root_disk, "usage", 0.0) or 0.0) / (1024 * 1024)
+    disk_used_mb = 0.0
+    if disk:
+        if isinstance(disk, dict) and "root" in disk:
+            disk_used_mb = float(_get_val(disk["root"], "usage", 0.0) or 0.0) / (
+                1024 * 1024
+            )
+        elif isinstance(disk, dict):
+            total_bytes = sum(
+                float(_get_val(d, "usage", 0.0) or 0.0)
+                for d in disk.values()
+                if d is not None
+            )
+            disk_used_mb = total_bytes / (1024 * 1024)
+        else:
+            root_disk = _get_val(disk, "root")
+            disk_used_mb = float(_get_val(root_disk, "usage", 0.0) or 0.0) / (
+                1024 * 1024
+            )
 
-    # Network I/O: sum across all interfaces
+    # Network I/O: sum across all interfaces, excluding loopback
     net_rx_bytes = 0.0
     net_tx_bytes = 0.0
     net = _get_val(state, "network")
     if net:
-        if isinstance(net, dict) or hasattr(net, "values"):
-            ifaces = net.values()
+        if isinstance(net, dict):
+            ifaces = list(net.items())
+        elif hasattr(net, "items"):
+            ifaces = list(net.items())
+        elif isinstance(net, list):
+            ifaces = [(getattr(x, "name", ""), x) for x in net]
         else:
-            ifaces = [net]
-        for iface_data in ifaces:
+            ifaces = [("", net)]
+        for iface_name, iface_data in ifaces:
+            if iface_name == "lo":
+                continue
             counters = _get_val(iface_data, "counters")
             net_rx_bytes += float(_get_val(counters, "bytes_received", 0.0) or 0.0)
             net_tx_bytes += float(_get_val(counters, "bytes_sent", 0.0) or 0.0)

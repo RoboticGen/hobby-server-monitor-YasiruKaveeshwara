@@ -2357,6 +2357,246 @@ html.session-cached #header-identity[hidden] {
 	font-family: var(--font-mono);
 }
 
+.graph-limit-tag {
+	font-size: 0.725rem;
+	font-weight: 600;
+	color: var(--text-muted);
+	background: var(--bg-canvas-subtle);
+	padding: 0.2rem 0.55rem;
+	border-radius: var(--radius-xs);
+	border: 1px solid var(--border-subtle);
+	font-family: var(--font-mono);
+}
+
+/* --- History Chart & Real-Time Telemetry Streaming --- */
+.history-chart-wrapper {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	background: #f8fafc;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	padding: 0.85rem 1rem 0.65rem 1rem;
+	position: relative;
+	overflow: visible;
+}
+
+.chart-stat-strip {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 0.5rem;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+
+.chart-stat-group {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.chart-stat-item {
+	display: flex;
+	align-items: baseline;
+	gap: 0.35rem;
+}
+
+.chart-stat-item.current {
+	background: #ffffff;
+	padding: 0.15rem 0.55rem;
+	border-radius: var(--radius-xs);
+	border: 1px solid var(--border-subtle);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.chart-stat-item .stat-label {
+	font-size: 0.65rem;
+	font-weight: 700;
+	color: var(--text-muted);
+	letter-spacing: 0.05em;
+}
+
+.chart-stat-item .stat-value {
+	font-size: 0.75rem;
+	font-weight: 700;
+	color: var(--text-primary);
+	font-family: var(--font-mono);
+}
+
+.chart-stat-item .stat-value.highlight {
+	font-size: 0.85rem;
+	font-weight: 800;
+}
+
+.svg-chart-container {
+	position: relative;
+	width: 100%;
+	overflow: visible;
+}
+
+.history-chart {
+	width: 100%;
+	height: auto;
+	overflow: visible;
+	display: block;
+}
+
+.live-beacon-pulse {
+	animation: beacon-pulse 2s cubic-bezier(0.25, 1, 0.5, 1) infinite;
+	transform-origin: center;
+}
+
+@keyframes beacon-pulse {
+	0% {
+		r: 4.5;
+		opacity: 0.8;
+	}
+	50% {
+		r: 12;
+		opacity: 0.15;
+	}
+	100% {
+		r: 16;
+		opacity: 0;
+	}
+}
+
+/* Real-time waveform: the React component recalculates X positions on
+   every 1-second tick, so the path attribute itself changes. These
+   transitions smooth SVG attribute changes between frames.
+   .chart-wave-stream motion is driven by coordinate recalculation,
+   no CSS translateX needed. */
+
+.chart-curve-line {
+	transition: filter 0.3s ease;
+}
+
+.chart-node-dot {
+	transition:
+		cx 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+		cy 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chart-area-fill {
+	transition: opacity 0.5s ease;
+}
+
+.live-moving-grid {
+	animation: grid-scroll-subtle 5s linear infinite;
+}
+
+@keyframes grid-scroll-subtle {
+	0% {
+		transform: translateX(0);
+	}
+	100% {
+		transform: translateX(-24px);
+	}
+}
+
+.chart-hover-tooltip {
+	position: absolute;
+	transform: translate(-50%, -115%);
+	pointer-events: none;
+	background: rgba(15, 23, 42, 0.92);
+	backdrop-filter: blur(8px);
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	border-radius: var(--radius-xs);
+	padding: 0.3rem 0.6rem;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+	z-index: 10;
+	white-space: nowrap;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.1rem;
+	transition:
+		left 0.08s ease,
+		top 0.08s ease;
+}
+
+.chart-hover-tooltip .tooltip-val {
+	font-size: 0.8rem;
+	font-weight: 800;
+	font-family: var(--font-mono);
+}
+
+.chart-hover-tooltip .tooltip-time {
+	font-size: 0.65rem;
+	font-weight: 500;
+	color: #94a3b8;
+	font-family: var(--font-mono);
+}
+
+.chart-time-axis {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-top: 0.4rem;
+	padding-top: 0.35rem;
+	border-top: 1px dashed var(--border-subtle);
+	font-size: 0.675rem;
+	color: var(--text-muted);
+	font-family: var(--font-mono);
+	font-weight: 600;
+}
+
+.axis-live-now {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	color: #059669;
+	font-weight: 700;
+}
+
+.axis-live-now .live-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: #059669;
+	box-shadow: 0 0 6px #059669;
+	animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+	0%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 0.4;
+		transform: scale(0.75);
+	}
+}
+
+.live-badge-ticker {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	padding: 0.2rem 0.55rem;
+	background: rgba(5, 150, 105, 0.08);
+	border: 1px solid rgba(5, 150, 105, 0.25);
+	border-radius: var(--radius-full);
+	font-size: 0.725rem;
+	font-weight: 700;
+	color: #059669;
+}
+
+.tile-header-badges {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+
+.gauge-label-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	width: 100%;
+}
+
 /* Form Footer */
 .invite-form-footer {
 	display: flex;
