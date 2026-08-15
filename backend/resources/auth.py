@@ -46,6 +46,53 @@ _ACCESS_COOKIE = "access_token"
 _REFRESH_COOKIE = "refresh_token"
 
 
+def _session_is_expired(expires_at: str) -> bool:
+    """Return True if an ISO-8601 session expiry has passed.
+
+    Fails closed: an unparseable or empty value is treated as expired rather
+    than as valid-forever. A corrupt timestamp is the one case where guessing
+    wrong grants indefinite access, so the safe direction is to refuse.
+
+    Naive timestamps are read as UTC. Every writer in this codebase stores an
+    aware UTC value, but comparing an aware `now` against a naive stored value
+    raises TypeError, which would surface as a 500 on the refresh path instead
+    of a clean 401.
+    """
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except (TypeError, ValueError):
+        log.warning(
+            "Session expires_at is unparseable (%r); treating as expired", expires_at
+        )
+        return True
+
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+
+    return expiry <= datetime.now(timezone.utc)
+
+
+def _set_access_cookie(resp: falcon.Response, access_token: str) -> None:
+    """Set only the access-token cookie.
+
+    Split out from _set_session_cookies because the refresh endpoint reissues
+    the access token without touching the refresh token. Keeping the attribute
+    list in one function means the cookie written at refresh time cannot drift
+    from the one written at login — a mismatch in `secure` or `same_site`
+    would silently produce a cookie the browser stops sending, which presents
+    as a random logout rather than as a bug.
+    """
+    resp.set_cookie(
+        _ACCESS_COOKIE,
+        access_token,
+        max_age=config.access_token_lifetime_minutes * 60,
+        secure=config.session_cookie_secure,
+        http_only=True,
+        same_site="Lax",
+        path="/",
+    )
+
+
 def _set_session_cookies(
     resp: falcon.Response,
     access_token: str,
@@ -58,15 +105,7 @@ def _set_session_cookies(
     not on cross-origin subrequests), and Secure only when configured
     (production requires HTTPS, local dev runs over HTTP).
     """
-    resp.set_cookie(
-        _ACCESS_COOKIE,
-        access_token,
-        max_age=config.access_token_lifetime_minutes * 60,
-        secure=config.session_cookie_secure,
-        http_only=True,
-        same_site="Lax",
-        path="/",
-    )
+    _set_access_cookie(resp, access_token)
     resp.set_cookie(
         _REFRESH_COOKIE,
         refresh_token,
@@ -243,6 +282,83 @@ class GoogleCallbackResource:
         # Set session cookies and redirect to the frontend
         _set_session_cookies(resp, access_token, refresh_token)
         raise falcon.HTTPFound(config.frontend_origin)
+
+
+class RefreshResource:
+    """Exchanges a valid refresh token for a new access token.
+
+    Without this endpoint the refresh token created at login was stored,
+    hashed, and cleared on logout but never redeemed, so every session died
+    hard at the access token's 30-minute expiry regardless of the 7-day
+    refresh lifetime — mid-task, with no warning.
+
+    The refresh token itself is deliberately *not* rotated on use. Rotation
+    is the stronger design (a stolen token is single-use), but it needs
+    replay detection to be safe: two tabs refreshing at once would each
+    present the same valid token, and whichever lost the race would be
+    logged out by its own sibling. Detecting that properly means a used-token
+    grace window and a family-wide revocation rule, which is more machinery
+    than a hobby monitor warrants. The token stays server-side revocable via
+    the sessions row, which is what makes logout definitive, and that is the
+    property being traded for.
+    """
+
+    def on_post(self, req: falcon.Request, resp: falcon.Response) -> None:
+        """Issue a fresh access token if the refresh cookie names a live session."""
+        refresh_token = req.cookies.get(_REFRESH_COOKIE)
+        if not refresh_token:
+            raise falcon.HTTPUnauthorized(
+                title="Not authenticated",
+                description="No refresh token. Please sign in.",
+            )
+
+        # Only the hash is ever stored, so the lookup hashes the presented
+        # token rather than comparing raw values.
+        session = repo.get_session_by_hash(hash_refresh_token(refresh_token))
+        if session is None:
+            # Covers both a forged token and one whose session was deleted by
+            # logout. Cookies are cleared so a stale token stops being resent
+            # on every subsequent request.
+            _clear_session_cookies(resp)
+            raise falcon.HTTPUnauthorized(
+                title="Invalid session",
+                description="Your session is no longer valid. Please sign in " "again.",
+            )
+
+        # expires_at is stored as ISO text and no SQL predicate filters on it,
+        # so expiry is enforced here. Without this check the 7-day lifetime
+        # would be decorative: the row outlives its own expiry and would keep
+        # minting access tokens indefinitely.
+        if _session_is_expired(session["expires_at"]):
+            repo.delete_session(session["id"])
+            _clear_session_cookies(resp)
+            raise falcon.HTTPUnauthorized(
+                title="Session expired",
+                description="Your session has expired. Please sign in again.",
+            )
+
+        # Re-read the user on every refresh instead of trusting the role
+        # embedded in the expiring token. This is the point at which an admin's
+        # demotion or revocation actually takes effect: a stale role would
+        # otherwise survive for the full refresh lifetime, so revoking someone
+        # would not log them out for up to 7 days.
+        user = repo.get_user_by_id(session["user_id"])
+        if user is None or user["status"] != "active":
+            repo.delete_session(session["id"])
+            _clear_session_cookies(resp)
+            raise falcon.HTTPUnauthorized(
+                title="Account unavailable",
+                description="Your account is no longer active. Please contact "
+                "an admin.",
+            )
+
+        _set_access_cookie(resp, create_access_token(user["id"], user["role"]))
+        resp.media = {
+            "id": user["id"],
+            "email": user["email"],
+            "role": user["role"],
+            "status": user["status"],
+        }
 
 
 class MeResource:

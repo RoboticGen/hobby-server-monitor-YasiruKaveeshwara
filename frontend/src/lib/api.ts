@@ -43,7 +43,58 @@ interface FalconErrorBody {
 }
 
 /**
+ * Path of the refresh endpoint, named here so apiFetch can recognise it and
+ * refuse to attempt a refresh-on-401 for the refresh call itself.
+ */
+const REFRESH_PATH = "/api/auth/refresh";
+
+/**
+ * The in-flight refresh, shared by every caller that hits a 401 at once.
+ *
+ * The dashboard mounts one polling tile per container, so an access token
+ * expiring while the page is open produces a burst of simultaneous 401s. Each
+ * firing its own refresh would send N identical requests for one new cookie,
+ * and they would race to write it. Collapsing them onto one promise means the
+ * first 401 refreshes and the rest await that same result.
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
+/**
+ * Ask the backend to reissue the access cookie from the refresh cookie.
+ *
+ * Uses bare fetch rather than apiFetch, both to avoid the recursion this
+ * function exists to service and because a failed refresh is an expected
+ * outcome (an expired or revoked session), not an error worth throwing.
+ *
+ * @returns true if a new access cookie was issued.
+ */
+function refreshAccessToken(): Promise<boolean> {
+	if (refreshInFlight) return refreshInFlight;
+
+	refreshInFlight = fetch(`${API_BASE_URL}${REFRESH_PATH}`, {
+		method: "POST",
+		credentials: "include",
+		headers: { Accept: "application/json" },
+	})
+		.then((response) => response.ok)
+		// A network failure here is indistinguishable to the caller from a
+		// refused refresh: either way there is no usable session.
+		.catch(() => false)
+		.finally(() => {
+			refreshInFlight = null;
+		});
+
+	return refreshInFlight;
+}
+
+/**
  * Perform a JSON request against the backend and return the parsed body.
+ *
+ * A 401 is retried once behind a token refresh. The access token is
+ * deliberately short-lived, so without this every call site would need its own
+ * expiry handling and a user would be logged out mid-task on a 30-minute
+ * timer. Recovering here keeps that concern in one place, which is the same
+ * reason the cookie rule lives here.
  *
  * @param path  Backend path beginning with a slash, e.g. "/api/auth/me".
  * @param options  Standard fetch options; `headers` and `body` are merged.
@@ -51,19 +102,34 @@ interface FalconErrorBody {
  * @throws {ApiError} When the response status is outside the 2xx range.
  */
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-	const response = await fetch(`${API_BASE_URL}${path}`, {
-		...options,
-		// The backend authenticates via httpOnly cookies set by the OAuth callback
-		// (backend Phase 5 / decision 7.1). Those cookies are deliberately
-		// unreadable from JavaScript, so the only way to authenticate a request is
-		// to let the browser attach them itself — which cross-origin fetch does
-		// *not* do by default. Without this line every authenticated call 401s.
-		credentials: "include",
-		headers: {
-			Accept: "application/json",
-			...options.headers,
-		},
-	});
+	// Issuing the request is a closure because a 401 needs it sent twice. Every
+	// call site passes `body` as a JSON string, which is safe to replay; a
+	// stream body would not be, since it cannot be read a second time.
+	const send = (): Promise<Response> =>
+		fetch(`${API_BASE_URL}${path}`, {
+			...options,
+			// The backend authenticates via httpOnly cookies set by the OAuth callback
+			// (backend Phase 5 / decision 7.1). Those cookies are deliberately
+			// unreadable from JavaScript, so the only way to authenticate a request is
+			// to let the browser attach them itself — which cross-origin fetch does
+			// *not* do by default. Without this line every authenticated call 401s.
+			credentials: "include",
+			headers: {
+				Accept: "application/json",
+				...options.headers,
+			},
+		});
+
+	let response = await send();
+
+	// One retry, and only for a path that is not itself the refresh call —
+	// otherwise a rejected refresh would recurse. Calling send() directly
+	// rather than re-entering apiFetch keeps that bound to a single attempt.
+	if (response.status === 401 && path !== REFRESH_PATH) {
+		if (await refreshAccessToken()) {
+			response = await send();
+		}
+	}
 
 	if (!response.ok) {
 		// Read the backend's own error text where it exists. A failed parse must

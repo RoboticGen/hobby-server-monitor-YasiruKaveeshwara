@@ -24,6 +24,7 @@ from backend.resources.auth import (
     GoogleLoginResource,
     LogoutResource,
     MeResource,
+    RefreshResource,
 )
 from backend.resources.assignments import (
     AssignmentResource,
@@ -122,6 +123,11 @@ def create_app() -> falcon.App:
     app.add_route("/api/auth/google/login", GoogleLoginResource())
     app.add_route("/api/auth/google/callback", GoogleCallbackResource())
     app.add_route("/api/auth/me", MeResource())
+    # Redeems the refresh token for a new access token. Not in the route
+    # coverage test's PUBLIC set on purpose: it 401s without a valid refresh
+    # cookie, so it satisfies the "every route rejects anonymous callers" rule
+    # on its own terms rather than by exemption.
+    app.add_route("/api/auth/refresh", RefreshResource())
     app.add_route("/api/auth/logout", LogoutResource())
 
     # container list + create
