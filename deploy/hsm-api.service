@@ -12,6 +12,26 @@ EnvironmentFile=/opt/hobby-server-monitor/backend/.env
 # Using Waitress to serve the Falcon app per Phase 24 instructions
 ExecStart=/opt/hobby-server-monitor/.venv/bin/waitress-serve --port=8000 --call backend.app:create_app
 Restart=on-failure
+RestartSec=5
+
+# --- Sandboxing ---
+# hsm-runner belongs to the lxd group, which is effectively root-equivalent:
+# anyone who can talk to the LXD socket can start a privileged container that
+# bind-mounts the host filesystem. These directives limit what this process can
+# reach with that authority if the API is ever compromised.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+# ProtectSystem=strict mounts the ENTIRE filesystem read-only, so every path the
+# process legitimately writes must be listed back. Without the data directory
+# here, SQLite fails with "attempt to write a readonly database" — the write is
+# blocked by the mount, not by file ownership, so no amount of chown fixes it.
+# The LXD socket needs write access too: connecting to an AF_UNIX socket is a
+# write operation on the socket inode.
+ReadWritePaths=/opt/hobby-server-monitor/data
+ReadWritePaths=/var/snap/lxd/common/lxd
 
 [Install]
 WantedBy=multi-user.target

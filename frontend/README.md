@@ -1,190 +1,270 @@
 # Frontend — Hobby Server Monitor
 
-Astro + React UI for the LXD container monitor. Talks to the Falcon backend in
-[../backend/](../backend/) over HTTP with session cookies.
-
-> **Status: partially built.** The pages listed under
-> [What exists today](#what-exists-today) work; several phases of UI are still
-> unbuilt (see [What is not built yet](#what-is-not-built-yet)). `astro build`
-> succeeds — "incomplete" here means missing features, not a broken build.
-> This README is deliberately a starting point rather than full documentation;
-> it will grow as the remaining phases land.
+A modern, high-performance Astro + React web application providing a telemetry console and management control panel for single-host LXD container environments. Communicates with the Falcon backend over HTTP with `httpOnly` session cookies.
 
 ---
 
-## Requirements
+## Table of Contents
 
-- **Node ≥ 22.12.0** (enforced by `engines` in `package.json`)
-- The **backend running on port 8000** — every page except `/login` fetches
-  from it, and there is no mock or fixture layer
+- [Frontend — Hobby Server Monitor](#frontend--hobby-server-monitor)
+  - [Table of Contents](#table-of-contents)
+  - [1. Architecture \& Design Philosophy](#1-architecture--design-philosophy)
+    - [Core Architecture Pillars](#core-architecture-pillars)
+  - [2. Features \& User Experience](#2-features--user-experience)
+    - [Authentication \& Session Flow](#authentication--session-flow)
+    - [Role-Based Access \& Scoped Views](#role-based-access--scoped-views)
+    - [Host Capacity \& Container Fleet (`/admin`)](#host-capacity--container-fleet-admin)
+    - [User Management \& Quotas (`/admin/users`)](#user-management--quotas-adminusers)
+    - [Container Telemetry, Detail \& Interactive Terminal (`/containers/view`)](#container-telemetry-detail--interactive-terminal-containersview)
+    - [Reliability \& Degraded Mode UX](#reliability--degraded-mode-ux)
+  - [3. Directory \& Component Map](#3-directory--component-map)
+  - [4. Design System \& Styling](#4-design-system--styling)
+  - [5. Setup \& Local Development](#5-setup--local-development)
+    - [Prerequisites](#prerequisites)
+    - [Installation \& Launch](#installation--launch)
+  - [6. Commands \& Scripts](#6-commands--scripts)
+  - [7. Configuration](#7-configuration)
+  - [8. Architectural \& Implementation Details](#8-architectural--implementation-details)
+    - [Why Static Build with No SSR Adapter](#why-static-build-with-no-ssr-adapter)
+    - [Runtime Query Routing on `/containers/view`](#runtime-query-routing-on-containersview)
+    - [Dual-Layer Optimistic Session Management](#dual-layer-optimistic-session-management)
+    - [Error Handling \& Server-Side Validation Passthrough](#error-handling--server-side-validation-passthrough)
+  - [9. Production Deployment](#9-production-deployment)
 
-## Setup
+---
 
-All commands run from this `frontend/` directory.
+## 1. Architecture & Design Philosophy
 
-```bash
-npm install
-cp .env.example .env      # optional in dev; the fallback below covers it
-npm run dev               # http://localhost:4321
+The frontend is built using **Astro (Static Output)** coupled with **React Islands** for rich, client-side interactivity:
+
+```text
+Browser (Astro Static Shells + React Islands)
+   │
+   ├─► Session Hydration: sessionStorage (instant paint) + GET /api/auth/me
+   ├─► Health Polling (10s): GET /health ──► StatusBanner.tsx
+   ├─► Live Metric Polling (5s-10s): GET /api/metrics/latest ──► MetricTile.tsx
+   ├─► Telemetry Graphs: GET /api/containers/{id}/history ──► ContainerResourceGraphs.tsx
+   ├─► Container Control: PATCH / DELETE /api/containers/{id} ──► ContainerDetailSummary.tsx
+   ├─► In-Browser Shell: POST /api/containers/{id}/exec ──► Terminal.tsx
+   └─► Admin Operations: /api/users, /api/accounting, /api/lxd/options
 ```
 
-## Commands
+### Core Architecture Pillars
 
-| Command           | Action                                                     |
-| ----------------- | ---------------------------------------------------------- |
-| `npm run dev`     | Dev server with HMR at `localhost:4321`                    |
-| `npm run build`   | Static build to `./dist/`                                  |
-| `npm run preview` | Serve the built output locally                             |
-| `npx astro check` | TypeScript + Astro type check — run this before committing |
-
-## Configuration
-
-One variable, read in `src/lib/api.ts` and `src/pages/login.astro`:
-
-| Variable              | Default                 | Purpose                        |
-| --------------------- | ----------------------- | ------------------------------ |
-| `PUBLIC_API_BASE_URL` | `http://localhost:8000` | Base URL of the Falcon backend |
-
-The `PUBLIC_` prefix is required by Astro for values that reach browser
-bundles. Both readers fall back to `http://localhost:8000`, so dev works with
-no `.env` file at all. In production, where Falcon serves the built files
-itself, set it to `""` so requests stay same-origin.
-
-**The backend must allow this origin.** Set `FRONTEND_ORIGIN=http://localhost:4321`
-in `backend/.env`, or every request fails CORS before it reaches a handler.
+- **Zero Node Server at Runtime:** Builds to pure static HTML/CSS/JS (`frontend/dist/`), deployable to any web server (or served directly by WSGI / Nginx).
+- **Client-Side Data Fetching:** Astro frontmatter executes strictly at build time; all live, user-scoped, and protected backend calls happen in client-side scripts via `apiFetch`.
+- **Decoupled Metric Load:** Metric tiles and historical charts poll pre-aggregated points from TinyFlux, creating zero live load on the LXD daemon.
+- **Strict Separation of Concerns:** UI islands never invent or duplicate backend validation logic — server-provided validation errors are surfaced directly.
 
 ---
 
-## Project structure
+## 2. Features & User Experience
+
+### Authentication & Session Flow
+
+- **Google OAuth2 Integration (`/login`):** Direct navigation and popup-based OAuth authentication flow.
+- **Zero-Flicker Optimistic Hydration (`src/lib/session.ts`):** Cached session data in `sessionStorage` paints user identity instantly upon navigation; background re-validation against `GET /api/auth/me` ensures token validity.
+- **Secure Cookie Management:** Cookies (`access_token`, `refresh_token`) are `httpOnly`, `SameSite=Lax`, and handled automatically by the browser with `credentials: "include"`.
+- **Graceful Logout:** `LogoutButton.tsx` issues `POST /api/auth/logout` to revoke server session hashes, clears local storage, and redirects to `/login`.
+
+### Role-Based Access & Scoped Views
+
+- **Admin Users:** Full access to host infrastructure, container fleet provisioning/mutations, user quotas, accounting, and container assignments.
+- **Regular Users (`/`):** Scoped landing dashboard showing personal quota consumption bars (RAM, CPU, Disk) against allocated limits, assigned containers, and direct access to instance metrics and terminals.
+
+### Host Capacity & Container Fleet (`/admin`)
+
+- **Capacity Accounting (`AccountingOverview.tsx`):** Real-time display of physical host resources vs committed container allocations (RAM MB, CPU cores, Disk GB) and active container counts.
+- **Container Fleet (`MetricTile.tsx`):** Live telemetry tiles for every container on the host with status indicators (`RUNNING`, `STOPPED`, `FROZEN`, `UNKNOWN`), CPU %, RAM meter (used vs peak vs limit), Disk usage, network I/O counters, and IP addresses.
+- **Container Provisioning (`CreateContainerForm.tsx`):**
+  - Instant validation of container names against LXD naming rules (`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`).
+  - Image selection (suggestions from `/api/lxd/options` or custom image string).
+  - Storage pool & Network bridge selection.
+  - Resource limit inputs (RAM in MB, CPU cores, Disk in GB).
+  - Autostart and Ephemeral container flags.
+  - Immediate user assignment with pre-flight quota validation.
+
+### User Management & Quotas (`/admin/users`)
+
+- **User Invitation (`InviteUserForm.tsx`):** Admin form to invite users by Google email, assigning initial roles (`user` or `admin`) and individual resource quotas.
+- **User Management Modal (`UserManageModal.tsx`):**
+  - **Account Role & Status (`UserAccountEditor.tsx`):** Change role (`user` / `admin`) and status (`invited`, `active`, `revoked`). Guarded against demoting or revoking the last active admin.
+  - **Quota Adjustments (`UserQuotaEditor.tsx`):** Dynamic editing of RAM, CPU, and Disk ceilings (with `0` representing unlimited).
+  - **Container Assignment Toggle (`AssignmentToggle.tsx`):** Real-time switch list granting or revoking user access to specific containers with immediate audit logging.
+
+### Container Telemetry, Detail & Interactive Terminal (`/containers/view`)
+
+- **Instance Overview (`ContainerDetailSummary.tsx`):** Breadcrumbs navigation, status pill, architecture, IP addresses, OS description, and container lifecycle actions:
+  - **Start / Stop / Restart**
+  - **Freeze / Unfreeze**
+  - **Delete** (with confirmation dialog)
+- **Time-Series Telemetry Graphs (`ContainerResourceGraphs.tsx`, `HistoryChart.tsx`):**
+  - Multi-tabbed SVG charts for **RAM Usage**, **CPU Nanoseconds / Load**, **Disk Usage**, and **Network I/O (Rx/Tx)**.
+  - Window selector: **1h** (raw samples), **24h** (5-minute downsampled buckets), and **7d** (1-hour downsampled buckets).
+  - Hover tooltips with timestamps and exact values.
+- **Interactive Shell Terminal (`Terminal.tsx`):**
+  - In-browser command execution interface sending JSON argv arrays (`["ls", "-la"]`) to `POST /api/containers/{id}/exec`.
+  - Real-time stdout, stderr, and exit code rendering.
+  - Terminal command history navigation with Up/Down arrow keys.
+  - Preset quick-action command chips (`uptime`, `free -h`, `df -h`, `ps aux`, `ip a`).
+
+### Reliability & Degraded Mode UX
+
+- **Global Status Banner (`StatusBanner.tsx`):** Embedded in `SiteHeader.astro`, polling `GET /health` every 30 seconds. Alerts the user with a dismissible warning banner when the LXD daemon is unreachable or operating in degraded mode.
+- **Stale Data Indicators:** Accounting and options forms indicate cached DB figures when live LXD queries fail.
+- **Skeleton Shimmer Screens:** Replaces blank screens during network requests with custom animated skeleton loaders across all tables, tiles, and detail views.
+
+---
+
+## 3. Directory & Component Map
 
 ```text
 frontend/
-├── src/
-│   ├── lib/
-│   │   └── api.ts                  The single fetch wrapper — all calls go through it
-│   ├── components/                 React islands
-│   │   ├── LogoutButton.tsx
-│   │   ├── MetricTile.tsx          Live-polling metric tile
-│   │   ├── HistoryChart.tsx        Hand-rolled SVG line chart
-│   │   ├── CreateContainerForm.tsx
-│   │   └── InviteUserForm.tsx
-│   └── pages/                      File-based routes
-│       ├── index.astro             Landing / session check
-│       ├── login.astro
-│       ├── admin/
-│       │   ├── index.astro         Container list + create form
-│       │   └── users.astro         User list + invite form
-│       ├── containers/
-│       │   └── [id].astro          Container detail + history chart
-│       ├── health-check.astro      Temporary — backend connectivity probe
-│       ├── metric-tile-test.astro  Throwaway component test page
-│       └── history-chart-test.astro  Throwaway component test page
-├── astro.config.mjs                Static output + the React integration
-├── tsconfig.json                   astro/tsconfigs/strict
-└── .env.example
+├── astro.config.mjs               Astro static configuration + React integration
+├── package.json                   Engine requirements, scripts, dependencies
+├── tsconfig.json                  TypeScript configuration extending astro/tsconfigs/strict
+├── dist/                          Static output directory produced by astro build
+├── public/
+│   ├── favicon.ico
+│   └── favicon.svg
+└── src/
+    ├── lib/
+    │   ├── api.ts                 Typed fetch wrapper with credentials & ApiError handling
+    │   └── session.ts             Optimistic local storage cache & backend session sync
+    ├── styles/
+    │   └── global.css             Futuristic design system, CSS tokens, glassmorphism, animations
+    ├── components/
+    │   ├── AccountingOverview.tsx Real-time host resource vs allocation progress bars
+    │   ├── AssignmentToggle.tsx   Toggle switch for user container grants/revocations
+    │   ├── ContainerDetailSummary.tsx Instance status, metadata, and lifecycle action buttons
+    │   ├── ContainerResourceGraphs.tsx Tabbed multi-metric SVG telemetry graphs (1h, 24h, 7d)
+    │   ├── CreateContainerForm.tsx Modal form for provisioning new LXD containers
+    │   ├── HistoryChart.tsx       Hand-crafted SVG line and area chart component
+    │   ├── InviteUserForm.tsx     Form for inviting new users with custom quotas
+    │   ├── LogoutButton.tsx       Sign-out button calling /api/auth/logout
+    │   ├── MetricTile.tsx         Live container telemetry card with gauge meters
+    │   ├── SiteHeader.astro       Universal role-aware navigation bar & status banner
+    │   ├── StatusBanner.tsx       Health monitor banner detecting degraded LXD status
+    │   ├── Terminal.tsx           In-browser shell terminal for container execution
+    │   ├── UserAccountEditor.tsx  Role and account status editor
+    │   ├── UserManageModal.tsx    Modal combining account, quota, and assignment editors
+    │   └── UserQuotaEditor.tsx    Resource quota adjustment form
+    └── pages/
+        ├── index.astro            Landing page & container-user scoped dashboard
+        ├── login.astro            Sign-in portal with Google OAuth integration
+        ├── admin/
+        │   ├── index.astro        Admin container fleet dashboard & creation mount
+        │   └── users.astro        User management table & assignment modal mount
+        ├── containers/
+        │   └── [id].astro         Container detail, telemetry graphs & terminal shell
+        ├── health-check.astro     Diagnostic connectivity probe page
+        ├── history-chart-test.astro Isolated component preview for HistoryChart
+        ├── metric-tile-test.astro Isolated component preview for MetricTile
+        └── terminal-test.astro    Isolated component preview for Terminal
 ```
 
 ---
 
-## The one thing to understand first
+## 4. Design System & Styling
 
-**This builds to static output with no SSR adapter**, because the backend
-serves the built files and no Node server exists in production
-(PROJECT-PLAN decision 7.12).
+The frontend styles live in [`src/styles/global.css`](src/styles/global.css) and follow a sleek, futuristic UI theme:
 
-Astro frontmatter therefore runs at **build time**, where there is no user and
-no session cookie. Any authenticated `apiFetch` placed in frontmatter would
-`401` during the build and bake that failure permanently into the HTML.
-
-So **every authenticated fetch runs in a `<script>` in the browser**, not in
-frontmatter. Each page renders a shell with hidden loading / error / content
-states, and the script unhides whichever one applies once the fetch resolves.
-Each affected page carries a comment explaining this — see the top of
-[src/pages/index.astro](src/pages/index.astro).
-
-The same constraint shapes routing. `containers/[id].astro` is a dynamic route,
-and static output requires `getStaticPaths()` to enumerate every path at build
-time — when no container UUIDs exist. So it emits one shell at
-`/containers/view/` and reads the real id from `?container=<uuid>`. Making
-`/containers/<uuid>` a genuine URL requires an SSR adapter.
-
-## Conventions
-
-**All backend calls go through `src/lib/api.ts`.** `apiFetch<T>()` sets
-`credentials: "include"` — the session cookies are `httpOnly`, so the browser
-must attach them itself; without that line every authenticated call 401s. Non-2xx
-responses throw `ApiError`, carrying the status and the backend's own
-`description`.
-
-**The server owns validation, and its wording is shown verbatim.** Container
-name rules, quota ceilings, duplicate emails — the backend evaluates all of it
-and returns prose naming the exact rule broken. Forms display that text as-is
-rather than re-implementing the rule, which would create a second copy to drift
-out of sync.
-
-**401 redirects, everything else surfaces.** A 401 means "not signed in", so
-the page sends you to `/login`. Any other failure is displayed, because
-bouncing to a login screen on a 500 or a dead backend hides the real fault.
-
-**Components carry no styles; pages style them.** Islands render plain semantic
-markup with class names like `.tile` or `.invite-form`, and each page that
-mounts one styles it via `:global(...)` in its own `<style>` block.
-
-**Islands are mounted imperatively when the data set is runtime-only.** Astro's
-`client:*` directives resolve at build time, so a list of tiles whose length
-depends on a fetch is mounted with `createRoot()` in the page script.
-`client:load` is used only where the component set is static, as in
-[index.astro](src/pages/index.astro).
-
-**TypeScript is strict, and `any` is not used.** Every component declares an
-explicit exported props interface.
+- **Typography:**
+  - UI Sans: `Inter` (Google Fonts) with fallbacks.
+  - Telemetry Mono: `JetBrains Mono` for gauges, quotas, timestamps, metrics, and terminal.
+- **Color Palette & Design Tokens:**
+  - **Canvas & Surface:** Light subtle canvas (`#f8fafc`), elevated card surfaces with glassmorphism backdrop blurs (`rgba(255, 255, 255, 0.85)`).
+  - **Accents:** Electric Cyan (`#0284c7`), Cyber Blue (`#2563eb`), Hyper Purple (`#7c3aed`).
+  - **Status Indications:** Running Green (`#059669`), Stopped Red (`#e11d48`), Frozen Amber (`#d97706`), Unknown Violet (`#7c3aed`).
+- **Interactive Micro-Animations:**
+  - Pulse glow indicators on live telemetry.
+  - Shimmer loaders on skeletons.
+  - Hover elevation transforms on glass cards.
 
 ---
 
-## What exists today
+## 5. Setup & Local Development
 
-| Route                                      | What it does                                                                                                                        |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `/login`                                   | Plain `<a>` to the backend's Google login route — a top-level navigation, not a fetch, since only that can follow the 302 to Google |
-| `/`                                        | Session check via `GET /api/auth/me`; shows who you are, plus sign-out                                                              |
-| `/admin`                                   | Every container, each with a live `MetricTile`, plus the create form                                                                |
-| `/admin/users`                             | All users with role / status / quota columns, plus the invite form                                                                  |
-| `/containers/view?container=<uuid>`        | One container's live tile and a history chart with 1h / 24h / 7d windows                                                            |
-| `/health-check`                            | Temporary: proves the dev server can reach the backend across the origin boundary                                                   |
-| `/metric-tile-test`, `/history-chart-test` | Throwaway pages that render components against hardcoded data, with no backend dependency                                           |
+### Prerequisites
 
-## What is not built yet
+- **Node.js ≥ 22.12.0**
+- Backend running on `http://localhost:8000`
 
-Tracked against `docs/AI-AGENT-BUILD-GUIDE.md`:
+### Installation & Launch
 
-| Phase                     | Scope                                                   | Status        |
-| ------------------------- | ------------------------------------------------------- | ------------- |
-| 15 — Scaffold             | Astro project, typed API client                         | Done          |
-| 16 — Login / session      | `/login`, landing page, logout                          | Done          |
-| 17 — Admin dashboard      | `MetricTile`, container list                            | Done          |
-| 18 — Create container     | Form island wired into `/admin`                         | Done          |
-| 19 — Detail + history     | `HistoryChart`, container detail page                   | Done          |
-| 20.1 — User list + invite | `/admin/users`, `InviteUserForm`                        | Done          |
-| 20.2 — Quota + assignment | `UserQuotaEditor`, `AssignmentToggle`                   | **Not built** |
-| 21 — Terminal             | `Terminal.tsx` against `POST /api/containers/{id}/exec` | **Not built** |
-| 22 — Scoped user view     | Non-admin dashboard                                     | **Not built** |
-| 23 — Reliability UX       | `StatusBanner`, loading/error audit                     | **Not built** |
+```bash
+# 1. Navigate to frontend directory
+cd frontend
 
-So today the UI can create, inspect, and monitor containers, and invite users —
-but editing quotas, granting or revoking container access, promoting or
-revoking a user, and the in-browser terminal are all still `curl`-only. The
-backend endpoints for every one of them already exist and are tested; only the
-UI is missing.
+# 2. Install dependencies
+npm install
 
-## Known rough edges
+# 3. Configure environment (optional in development; defaults to localhost:8000)
+cp .env.example .env
 
-- **No navigation between pages.** No step in the build guide added a nav bar,
-  so `/admin` and `/admin/users` are reached by typing the URL. `/admin/users`
-  and the container detail page each carry a single back-link.
-- **Three pages are scheduled for deletion**: `health-check.astro` served its
-  purpose in Phase 15, and the two `*-test.astro` pages exist only for the
-  steps that built those components. Their own comments say so.
-- **`AGENTS.md` and `CLAUDE.md`** are byte-identical AI-agent instruction files
-  generated by `npm create astro` (dev-server usage plus links to the Astro
-  docs). They are not project documentation and nothing here depends on them.
-- **Container detail is not a real URL per container** — see the SSR note above.
+# 4. Start Astro development server with HMR
+npm run dev
+# Server running at http://localhost:4321
+```
+
+---
+
+## 6. Commands & Scripts
+
+| Command           | Description                                                               |
+| ----------------- | ------------------------------------------------------------------------- |
+| `npm run dev`     | Starts development server with Hot Module Replacement at `localhost:4321` |
+| `npm run build`   | Compiles static production build into `./dist/`                           |
+| `npm run preview` | Serves production `./dist/` bundle locally for previewing                 |
+| `npx astro check` | Runs full TypeScript and Astro template type-checking                     |
+
+---
+
+## 7. Configuration
+
+Environment variables are read via Vite/Astro `import.meta.env`:
+
+| Variable              | Default                 | Purpose                                                                |
+| --------------------- | ----------------------- | ---------------------------------------------------------------------- |
+| `PUBLIC_API_BASE_URL` | `http://localhost:8000` | Base URL of the Falcon backend. In same-origin production, set to `""` |
+
+> [!IMPORTANT]
+> The backend's `FRONTEND_ORIGIN` in `backend/.env` must match the URL where this frontend is served (e.g. `http://localhost:4321` in development). Otherwise, browser CORS policies will block cookie-bearing requests.
+
+---
+
+## 8. Architectural & Implementation Details
+
+### Why Static Build with No SSR Adapter
+
+In production, the entire system is hosted on a single Linux host without needing a separate Node.js server process. By configuring Astro for static output (`output: "static"` in `astro.config.mjs`), Astro emits pure static assets into `dist/`. The Falcon API or an Nginx reverse proxy serves these files directly, minimizing resource consumption.
+
+### Runtime Query Routing on `/containers/view`
+
+Because static site generation creates pages at build time, Astro cannot know container UUIDs in advance. [`src/pages/containers/[id].astro`](src/pages/containers/%5Bid%5D.astro) uses `getStaticPaths()` returning a sentinel path (`/containers/view/`). At runtime, the client script reads the container ID from `?container=<uuid>` and dynamically fetches container metadata.
+
+### Dual-Layer Optimistic Session Management
+
+1. **Synchronous Hydration:** When a user navigates between pages, `syncSession()` in [`src/lib/session.ts`](src/lib/session.ts) immediately reads the session from `sessionStorage`, updating the UI header and greeting with zero layout shift or visual flicker.
+2. **Authoritative Revalidation:** Concurrently, an asynchronous request is dispatched to `GET /api/auth/me`. If the backend returns 401 (e.g., token expired or revoked), the local cache is cleared and the browser redirects to `/login`.
+
+### Error Handling & Server-Side Validation Passthrough
+
+[`src/lib/api.ts`](src/lib/api.ts) defines an `ApiError` class that captures the HTTP status and the backend's exact `title` and `description`. Forms display the server's precise error message (e.g. quota excess numbers or invalid container name regex rules) verbatim, ensuring the frontend never drifts from backend policy.
+
+---
+
+## 9. Production Deployment
+
+When building for production:
+
+```bash
+cd frontend
+npm run build
+```
+
+This generates static HTML, JS, and CSS files in `frontend/dist/`. In a standard deployment:
+
+- Place the `dist/` directory behind your reverse proxy (e.g., Nginx, Caddy), or configure Falcon to serve static assets.
+- Ensure the backend's `FRONTEND_ORIGIN` matches the production domain.
+- Ensure `SESSION_COOKIE_SECURE=true` in `backend/.env` when serving over HTTPS.
