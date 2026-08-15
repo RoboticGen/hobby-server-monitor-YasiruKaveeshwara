@@ -129,6 +129,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
       import { createElement } from "react";
       import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
+      import { toast } from "../../lib/alerts";
       import ContainerDetailSummary from "../../components/ContainerDetailSummary";
       import ContainerResourceGraphs from "../../components/ContainerResourceGraphs";
       import Terminal from "../../components/Terminal";
@@ -167,6 +168,7 @@ import SiteHeader from "../../components/SiteHeader.astro";
         detail.hidden = true;
         (document.getElementById("error-text") as HTMLElement).textContent = message;
         errorEl.hidden = false;
+        toast.error(message, "Container Console");
       }
 
       /**

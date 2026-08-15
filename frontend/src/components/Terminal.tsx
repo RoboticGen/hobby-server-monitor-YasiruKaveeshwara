@@ -12,6 +12,7 @@
  */
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast } from "../lib/alerts";
 
 export interface TerminalProps {
 	containerId: string;
@@ -280,6 +281,7 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 	function handleClear(): void {
 		setLog([]);
 		setCommandText("");
+		toast.info("Terminal screen cleared.");
 		focusInput();
 	}
 
@@ -292,6 +294,7 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 			},
 		]);
 		setCommandText("");
+		toast.info("Terminal session reset.");
 		focusInput();
 	}
 
@@ -313,9 +316,10 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 		try {
 			await navigator.clipboard.writeText(text);
 			setCopiedNotice(true);
+			toast.success("Terminal log copied to clipboard.", "Copied");
 			setTimeout(() => setCopiedNotice(false), 2000);
 		} catch {
-			// ignore clipboard error
+			toast.warning("Failed to copy log to clipboard.");
 		}
 	}
 
@@ -389,6 +393,7 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 				rawCommand: trimmed,
 				message: parsed.reason,
 			});
+			toast.warning(parsed.reason, "Command Syntax");
 			return;
 		}
 
@@ -410,16 +415,20 @@ export default function Terminal({ containerId, lxdName, initialLog = [] }: Term
 				stdout: result.stdout,
 				stderr: result.stderr,
 			});
+
+			if (result.exit_code !== 0) {
+				toast.warning(`Command exited with status code ${result.exit_code}.`, "Execution Completed");
+			}
 		} catch (err) {
+			const errMsg =
+				err instanceof ApiError ? `(${err.status}): ${err.message}` : "Could not reach the server to execute command.";
 			appendEntry({
 				kind: "error",
 				argv,
 				rawCommand: trimmed,
-				message:
-					err instanceof ApiError ?
-						`(${err.status}): ${err.message}`
-					:	"Could not reach the server to execute command.",
+				message: errMsg,
 			});
+			toast.error(err, "Command Failed");
 		} finally {
 			setRunning(false);
 			setTimeout(focusInput, 50);

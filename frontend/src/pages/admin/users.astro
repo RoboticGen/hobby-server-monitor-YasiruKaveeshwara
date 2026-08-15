@@ -78,6 +78,7 @@ import "../../styles/global.css";
       import { createRoot, type Root } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
       import { syncSession } from "../../lib/session";
+      import { toast } from "../../lib/alerts";
       import InviteUserForm from "../../components/InviteUserForm";
       import UserManageModal, { type UserRecord } from "../../components/UserManageModal";
 
@@ -120,6 +121,7 @@ import "../../styles/global.css";
         table.hidden = true;
         (document.getElementById("error-text") as HTMLElement).textContent = message;
         errorEl.hidden = false;
+        toast.error(message, "User Manager");
       }
 
       function formatNumber(value: number): string {

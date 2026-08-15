@@ -9,6 +9,7 @@
  */
 import { useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast } from "../lib/alerts";
 
 type UserRole = "admin" | "user";
 
@@ -95,9 +96,16 @@ export default function InviteUserForm({ onInvited }: InviteUserFormProps) {
 
 	async function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
 		event.preventDefault();
+
+		if (!email.trim() || !email.includes("@")) {
+			toast.warning("Please enter a valid Google account email address.");
+			return;
+		}
+
 		setSubmitting(true);
 		setError(null);
 		setSuccess(null);
+		toast.info(`Authorizing access for ${email.trim()}…`);
 
 		try {
 			const invited = await apiFetch<InvitedUser>("/api/users", {
@@ -112,9 +120,9 @@ export default function InviteUserForm({ onInvited }: InviteUserFormProps) {
 				}),
 			});
 
-			setSuccess(
-				`Successfully authorized ${invited.email} (${invited.role.toUpperCase()}). The user can now authenticate instantly using Google OAuth.`,
-			);
+			const successMsg = `Successfully authorized ${invited.email} (${invited.role.toUpperCase()}). The user can now authenticate instantly using Google OAuth.`;
+			setSuccess(successMsg);
+			toast.success(`User ${invited.email} authorized as ${invited.role.toUpperCase()}.`, "User Authorized");
 			setEmail("");
 			setSelectedPreset("standard");
 			setQuotaRamMb(2048);
@@ -123,9 +131,10 @@ export default function InviteUserForm({ onInvited }: InviteUserFormProps) {
 			setShowCustomLimits(false);
 			onInvited?.();
 		} catch (err) {
-			setError(
-				err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server to authorize user.",
-			);
+			const errorMsg =
+				err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server to authorize user.";
+			setError(errorMsg);
+			toast.error(err, "Authorization Failed");
 		} finally {
 			setSubmitting(false);
 		}

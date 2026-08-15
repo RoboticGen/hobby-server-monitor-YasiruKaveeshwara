@@ -9,6 +9,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast, showConfirm } from "../lib/alerts";
 import type { MetricPoint } from "./MetricTile";
 
 interface ContainerDetailSummaryProps {
@@ -101,9 +102,10 @@ export default function ContainerDetailSummary({
 		}
 	};
 
-	const handleAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
+	const executeAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
 		setBusy(true);
 		setActionMessage({ type: "info", text: `Dispatching ${action} command…` });
+		toast.info(`Dispatching ${action} command for '${lxdName}'…`);
 
 		try {
 			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
@@ -114,15 +116,58 @@ export default function ContainerDetailSummary({
 
 			await refreshMetadata();
 			setActionMessage({ type: "success", text: `Container ${action} completed successfully.` });
+			toast.success(`Container '${lxdName}' ${action}ed successfully.`);
 		} catch (err) {
-			setActionMessage({
-				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
-			});
+			const errorText = err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.";
+			setActionMessage({ type: "error", text: errorText });
+			toast.error(err, `Failed to ${action} container`);
 		} finally {
 			setBusy(false);
 			window.setTimeout(() => setActionMessage(null), 4000);
 		}
+	};
+
+	const handleAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
+		if (action === "stop") {
+			const confirmed = await showConfirm({
+				title: "Stop Container",
+				message: `Are you sure you want to stop container '${lxdName}'? Active services will be halted.`,
+				confirmText: "Stop Container",
+				isDanger: false,
+				iconType: "warning",
+				onConfirm: () => executeAction(action),
+			});
+			if (!confirmed) return;
+			return;
+		}
+
+		if (action === "restart") {
+			const confirmed = await showConfirm({
+				title: "Restart Container",
+				message: `Restart container '${lxdName}'? All active processes inside the container will reboot.`,
+				confirmText: "Restart Container",
+				isDanger: false,
+				iconType: "info",
+				onConfirm: () => executeAction(action),
+			});
+			if (!confirmed) return;
+			return;
+		}
+
+		if (action === "freeze") {
+			const confirmed = await showConfirm({
+				title: "Freeze Container",
+				message: `Freeze container '${lxdName}'? All running processes will be paused in memory.`,
+				confirmText: "Freeze Container",
+				isDanger: false,
+				iconType: "warning",
+				onConfirm: () => executeAction(action),
+			});
+			if (!confirmed) return;
+			return;
+		}
+
+		await executeAction(action);
 	};
 
 	const handleLimitUpdate = async (): Promise<void> => {
@@ -143,11 +188,11 @@ export default function ContainerDetailSummary({
 			});
 
 			setActionMessage({ type: "success", text: "Resource limits updated successfully." });
+			toast.success(`Resource limits updated for '${lxdName}'.`);
 		} catch (err) {
-			setActionMessage({
-				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
-			});
+			const errorText = err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.";
+			setActionMessage({ type: "error", text: errorText });
+			toast.error(err, "Failed to update limits");
 		} finally {
 			setBusy(false);
 			window.setTimeout(() => setActionMessage(null), 4000);
@@ -155,34 +200,40 @@ export default function ContainerDetailSummary({
 	};
 
 	const handleDelete = async (): Promise<void> => {
-		if (!window.confirm(`Permanently delete container '${lxdName}'? This cannot be undone.`)) {
-			return;
-		}
-
-		setBusy(true);
-		setActionMessage({ type: "info", text: "Terminating and purging container…" });
-
-		try {
-			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
-				method: "DELETE",
-			});
-			window.location.replace("/admin");
-		} catch (err) {
-			setActionMessage({
-				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
-			});
-			setBusy(false);
-		}
+		await showConfirm({
+			title: "Delete Container",
+			message: `Permanently terminate and purge container '${lxdName}'? All local files and configurations will be destroyed. This action cannot be undone.`,
+			confirmText: "Delete Container",
+			cancelText: "Cancel",
+			isDanger: true,
+			iconType: "danger",
+			onConfirm: async () => {
+				setBusy(true);
+				setActionMessage({ type: "info", text: "Terminating and purging container…" });
+				try {
+					await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
+						method: "DELETE",
+					});
+					toast.success(`Container '${lxdName}' deleted successfully.`);
+					window.location.replace("/admin");
+				} catch (err) {
+					const errorText = err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.";
+					setActionMessage({ type: "error", text: errorText });
+					toast.error(err, "Failed to delete container");
+					setBusy(false);
+				}
+			},
+		});
 	};
 
 	const copyIp = async (ip: string) => {
 		try {
 			await navigator.clipboard.writeText(ip);
 			setCopiedIp(true);
+			toast.success(`IP address copied: ${ip}`, "Copied");
 			setTimeout(() => setCopiedIp(false), 2000);
 		} catch {
-			// ignore
+			toast.info(`Selected IP: ${ip}`, "IP Address");
 		}
 	};
 

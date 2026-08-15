@@ -6,6 +6,7 @@
  */
 import { useState } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast } from "../lib/alerts";
 
 interface GrantResult {
 	assignment_id: string;
@@ -56,14 +57,22 @@ export default function AssignmentToggle({
 
 		try {
 			await apiFetch<GrantResult>(path, { method: "POST" });
-			resolve("granted", true, `Granted access to ${containerName}.`);
+			const msg = `Granted access to ${containerName}.`;
+			resolve("granted", true, msg);
+			toast.success(msg, "Container Assigned");
 		} catch (err) {
 			if (err instanceof ApiError && err.status === 409) {
-				resolve("granted", false, `Already assigned to ${containerName}.`);
+				const msg = `Already assigned to ${containerName}.`;
+				resolve("granted", false, msg);
+				toast.info(msg);
 			} else if (err instanceof ApiError) {
-				setError(`Could not grant: ${err.message}`);
+				const errMsg = `Could not grant: ${err.message}`;
+				setError(errMsg);
+				toast.error(err, "Assignment Failed");
 			} else {
-				setError("Could not reach the server to grant access.");
+				const errMsg = "Could not reach the server to grant access.";
+				setError(errMsg);
+				toast.error(errMsg, "Assignment Failed");
 			}
 		} finally {
 			setBusy(false);
@@ -77,14 +86,22 @@ export default function AssignmentToggle({
 
 		try {
 			await apiFetch<RevokeResult>(path, { method: "DELETE" });
-			resolve("revoked", true, `Revoked access to ${containerName}.`);
+			const msg = `Revoked access to ${containerName}.`;
+			resolve("revoked", true, msg);
+			toast.success(msg, "Container Revoked");
 		} catch (err) {
 			if (err instanceof ApiError && err.status === 404) {
-				resolve("revoked", false, `Not currently assigned to ${containerName}.`);
+				const msg = `Not currently assigned to ${containerName}.`;
+				resolve("revoked", false, msg);
+				toast.info(msg);
 			} else if (err instanceof ApiError) {
-				setError(`Could not revoke: ${err.message}`);
+				const errMsg = `Could not revoke: ${err.message}`;
+				setError(errMsg);
+				toast.error(err, "Revocation Failed");
 			} else {
-				setError("Could not reach the server to revoke access.");
+				const errMsg = "Could not reach the server to revoke access.";
+				setError(errMsg);
+				toast.error(errMsg, "Revocation Failed");
 			}
 		} finally {
 			setBusy(false);

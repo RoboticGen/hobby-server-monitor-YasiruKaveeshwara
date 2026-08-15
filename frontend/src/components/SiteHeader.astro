@@ -2,6 +2,7 @@
 // Site header — the primary navigation bar for every signed-in page.
 import LogoutButton from "./LogoutButton";
 import StatusBanner from "./StatusBanner";
+import GlobalAlertMount from "./GlobalAlertMount";
 import "../styles/global.css";
 
 interface Props {
@@ -80,6 +81,7 @@ const currentPath = Astro.url.pathname.replace(/(.)\/$/, "$1");
 </header>
 
 <StatusBanner client:idle />
+<GlobalAlertMount client:load />
 
 <script is:inline>
   (function () {

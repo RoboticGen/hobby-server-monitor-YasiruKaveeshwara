@@ -8,6 +8,7 @@
  */
 import { useEffect, useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast, showConfirm } from "../lib/alerts";
 
 export type UserRole = "admin" | "user";
 export type UserStatus = "invited" | "active" | "revoked";
@@ -89,6 +90,7 @@ export default function UserManageModal({
 		e.preventDefault();
 		setAccountSaving(true);
 		setAccountNotice(null);
+		toast.info("Saving account privileges…");
 
 		try {
 			await apiFetch(`/api/users/${encodeURIComponent(user.id)}`, {
@@ -97,13 +99,17 @@ export default function UserManageModal({
 				body: JSON.stringify({ role, status }),
 			});
 
-			setAccountNotice({ type: "success", text: "Account settings updated successfully." });
+			const msg = "Account settings updated successfully.";
+			setAccountNotice({ type: "success", text: msg });
+			toast.success(msg, "Account Saved");
 			onUserUpdated();
 		} catch (err) {
+			const errMsg = err instanceof ApiError ? `${err.status}: ${err.message}` : "Failed to update account.";
 			setAccountNotice({
 				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Failed to update account.",
+				text: errMsg,
 			});
+			toast.error(err, "Failed to Update Account");
 		} finally {
 			setAccountSaving(false);
 		}
@@ -111,30 +117,40 @@ export default function UserManageModal({
 
 	// Revoke Account Shortcut
 	const handleRevokeAccount = async () => {
-		if (!window.confirm(`Revoke account access for ${user.email}? They will no longer be able to authenticate.`)) {
-			return;
-		}
+		await showConfirm({
+			title: "Revoke User Access",
+			message: `Revoke account access for ${user.email}? They will no longer be able to authenticate and active sessions will be terminated immediately.`,
+			confirmText: "Revoke Access",
+			cancelText: "Cancel",
+			isDanger: true,
+			iconType: "danger",
+			onConfirm: async () => {
+				setAccountSaving(true);
+				setAccountNotice(null);
 
-		setAccountSaving(true);
-		setAccountNotice(null);
-
-		try {
-			await apiFetch(`/api/users/${encodeURIComponent(user.id)}`, {
-				method: "PATCH",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ status: "revoked" }),
-			});
-			setStatus("revoked");
-			setAccountNotice({ type: "success", text: `${user.email} access revoked.` });
-			onUserUpdated();
-		} catch (err) {
-			setAccountNotice({
-				type: "error",
-				text: err instanceof ApiError ? err.message : "Could not revoke account.",
-			});
-		} finally {
-			setAccountSaving(false);
-		}
+				try {
+					await apiFetch(`/api/users/${encodeURIComponent(user.id)}`, {
+						method: "PATCH",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ status: "revoked" }),
+					});
+					setStatus("revoked");
+					const msg = `${user.email} access revoked.`;
+					setAccountNotice({ type: "success", text: msg });
+					toast.success(msg, "User Revoked");
+					onUserUpdated();
+				} catch (err) {
+					const errMsg = err instanceof ApiError ? err.message : "Could not revoke account.";
+					setAccountNotice({
+						type: "error",
+						text: errMsg,
+					});
+					toast.error(err, "Failed to Revoke User");
+				} finally {
+					setAccountSaving(false);
+				}
+			},
+		});
 	};
 
 	// Quota Form Submission
@@ -142,6 +158,7 @@ export default function UserManageModal({
 		e.preventDefault();
 		setQuotaSaving(true);
 		setQuotaNotice(null);
+		toast.info("Saving quota limits…");
 
 		try {
 			await apiFetch(`/api/users/${encodeURIComponent(user.id)}`, {
@@ -154,13 +171,17 @@ export default function UserManageModal({
 				}),
 			});
 
-			setQuotaNotice({ type: "success", text: "Resource quotas updated successfully." });
+			const msg = "Resource quotas updated successfully.";
+			setQuotaNotice({ type: "success", text: msg });
+			toast.success(msg, "Quotas Saved");
 			onUserUpdated();
 		} catch (err) {
+			const errMsg = err instanceof ApiError ? `${err.status}: ${err.message}` : "Failed to update quotas.";
 			setQuotaNotice({
 				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Failed to update quotas.",
+				text: errMsg,
 			});
+			toast.error(err, "Failed to Save Quotas");
 		} finally {
 			setQuotaSaving(false);
 		}
@@ -178,18 +199,24 @@ export default function UserManageModal({
 			if (grant) {
 				await apiFetch(path, { method: "POST" });
 				assignmentStates.set(key, "granted");
-				setAssignmentNotice({ type: "success", text: `Granted access to ${containerName}.` });
+				const msg = `Granted access to ${containerName}.`;
+				setAssignmentNotice({ type: "success", text: msg });
+				toast.success(msg, "Container Assigned");
 			} else {
 				await apiFetch(path, { method: "DELETE" });
 				assignmentStates.set(key, "revoked");
-				setAssignmentNotice({ type: "success", text: `Revoked access to ${containerName}.` });
+				const msg = `Revoked access to ${containerName}.`;
+				setAssignmentNotice({ type: "success", text: msg });
+				toast.success(msg, "Container Revoked");
 			}
 			onUserUpdated();
 		} catch (err) {
+			const errMsg = err instanceof ApiError ? err.message : "Failed to update container assignment.";
 			setAssignmentNotice({
 				type: "error",
-				text: err instanceof ApiError ? err.message : "Failed to update container assignment.",
+				text: errMsg,
 			});
+			toast.error(err, "Assignment Update Failed");
 		} finally {
 			setBusyContainerId(null);
 		}

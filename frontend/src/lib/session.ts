@@ -9,6 +9,7 @@
  * 3. Immediately clears local cache and triggers logout/redirect if backend returns 401.
  */
 import { apiFetch, ApiError } from "./api";
+import { toast } from "./alerts";
 
 export interface UserAllocation {
 	ram_mb: number;
@@ -89,6 +90,9 @@ export async function syncSession(options?: {
 		return fresh;
 	} catch (err) {
 		if (err instanceof ApiError && err.status === 401) {
+			if (cached) {
+				toast.warning("Your session has expired. Please sign in again.", "Session Expired");
+			}
 			clearCachedSession();
 			if (options?.onUnauthorized) {
 				options.onUnauthorized();

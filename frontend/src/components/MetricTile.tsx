@@ -119,9 +119,15 @@ export default function MetricTile({
 
 		async function poll(): Promise<void> {
 			try {
-				const data = await apiFetch<LatestMetricsResponse>(
-					`/api/metrics/latest?container=${encodeURIComponent(containerId)}`,
-				);
+				// `fresh=1` while this tile has no previous point to difference
+				// against: a container that has only just started has nothing
+				// stored, and CPU/network are rates that need two readings. The
+				// server honours it only below that two-point floor, so an
+				// established container never puts this on LXD.
+				const query = new URLSearchParams({ container: containerId });
+				if (previousPoint.current === null) query.set("fresh", "1");
+
+				const data = await apiFetch<LatestMetricsResponse>(`/api/metrics/latest?${query}`);
 				if (cancelled) return;
 
 				if (data.point === null) {
