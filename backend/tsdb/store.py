@@ -24,6 +24,29 @@ from backend.config import config
 # initialisation check so concurrent requests don't create two instances.
 _store: TinyFlux | None = None
 _store_lock = threading.Lock()
+_sync_lock = threading.Lock()
+_last_file_signature: tuple[float, int] = (0.0, 0)
+
+
+def _sync_store_with_disk(store: TinyFlux) -> None:
+    """Reindex if the underlying CSV file was modified by another process.
+
+    The background collector process writes new data points directly to the CSV
+    file on disk. Without reindexing, a long-running API process holds a stale
+    in-memory index and continues serving points from when the API booted.
+    """
+    global _last_file_signature
+    try:
+        stat = config.tinyflux_path.stat()
+        sig = (stat.st_mtime, stat.st_size)
+        if sig != _last_file_signature:
+            with _sync_lock:
+                if sig != _last_file_signature:
+                    store.index.invalidate()
+                    store.reindex()
+                    _last_file_signature = (stat.st_mtime, stat.st_size)
+    except Exception:
+        pass
 
 
 def get_store() -> TinyFlux:
@@ -39,6 +62,12 @@ def get_store() -> TinyFlux:
             # in case another thread initialised it while we were waiting.
             if _store is None:
                 _store = TinyFlux(config.tinyflux_path)
+                try:
+                    stat = config.tinyflux_path.stat()
+                    global _last_file_signature
+                    _last_file_signature = (stat.st_mtime, stat.st_size)
+                except Exception:
+                    pass
     return _store
 
 
@@ -121,6 +150,7 @@ def query_range(
         resolution: Granularity to query — "raw", "5m", or "1h".
     """
     store = get_store()
+    _sync_store_with_disk(store)
     Tag = TagQuery()
     Time = TimeQuery()
 
@@ -152,6 +182,7 @@ def get_latest_point(container_id: str) -> dict | None:
     Returns a plain dict, or None if no points exist for this container.
     """
     store = get_store()
+    _sync_store_with_disk(store)
     Tag = TagQuery()
 
     results = store.search(
@@ -189,13 +220,14 @@ def get_recent_points(container_id: str, limit: int = 60) -> list[dict]:
         so the frontend can append new live points to the tail of this list.
     """
     store = get_store()
+    _sync_store_with_disk(store)
     Tag = TagQuery()
 
     # Fetch all raw points for this container (no time filter needed here;
     # the retention job already prunes anything older than 24 h). Sorting
     # after the fact is cheaper than a TinyFlux time-range scan when the
-    # raw dataset for a single container is small (collector_interval * 24h
-    # = at most ~8640 rows).
+    # raw dataset for a single container is small (24h / collector_interval
+    # = at most ~17,280 rows at the shipped 5-second interval).
     results = store.search(
         (Tag.container_id == container_id) & (Tag.resolution == "raw")
     )

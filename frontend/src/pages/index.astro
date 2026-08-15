@@ -178,6 +178,7 @@ import "../styles/global.css";
       import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../lib/api";
       import { syncSession, type UserSession } from "../lib/session";
+      import { toast } from "../lib/alerts";
       import MetricTile from "../components/MetricTile";
 
       interface ContainerRecord {
@@ -284,6 +285,7 @@ import "../styles/global.css";
               ? `Could not load your containers (${err.status}): ${err.message}`
               : "Could not reach the server to load your containers.";
           listError.hidden = false;
+          toast.error(err, "Failed to Load Containers");
         }
       }
 

@@ -68,7 +68,7 @@ class UserListResource:
             "quota_disk_gb": 20
         }
 
-        The invited user does NOT receive an email 
+        The invited user does NOT receive an email
         (only Google OAuth is used for authentication — the invited user simply
         needs to sign in with their Google account using the same email
         address, and the OAuth callback will recognize them and upgrade
@@ -185,13 +185,13 @@ class UserDetailResource:
             updates["status"] = body["status"]
 
         _QUOTA_KINDS = {
-            "quota_ram_mb": int, "quota_cpu": float, "quota_disk_gb": int,
+            "quota_ram_mb": int,
+            "quota_cpu": float,
+            "quota_disk_gb": int,
         }
         for field, kind in _QUOTA_KINDS.items():
             if field in body:
-                updates[field] = validate_non_negative_number(
-                    body[field], field, kind
-                )
+                updates[field] = validate_non_negative_number(body[field], field, kind)
 
         if not updates:
             raise falcon.HTTPBadRequest(
@@ -212,7 +212,8 @@ class UserDetailResource:
             still_active = updates.get("status", user["status"]) == "active"
             if not (still_admin and still_active):
                 other_active_admins = sum(
-                    1 for u in repo.list_users()
+                    1
+                    for u in repo.list_users()
                     if u["id"] != user_id
                     and u["role"] == "admin"
                     and u["status"] == "active"

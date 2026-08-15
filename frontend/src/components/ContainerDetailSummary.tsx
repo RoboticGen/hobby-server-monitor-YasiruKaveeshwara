@@ -9,6 +9,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast, showConfirm } from "../lib/alerts";
 import type { MetricPoint } from "./MetricTile";
 
 interface ContainerDetailSummaryProps {
@@ -64,6 +65,20 @@ function computeCpuPercent(previous: MetricPoint, current: MetricPoint): number 
 	return (busyNs / (elapsedMs * 1_000_000)) * 100;
 }
 
+function computeRate(
+	previous: MetricPoint,
+	current: MetricPoint,
+	field: "net_rx_bytes" | "net_tx_bytes",
+): number | null {
+	const elapsedMs = Date.parse(current.time) - Date.parse(previous.time);
+	if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return null;
+
+	const delta = current[field] - previous[field];
+	if (!Number.isFinite(delta) || delta < 0) return null;
+
+	return delta / (elapsedMs / 1000);
+}
+
 export default function ContainerDetailSummary({
 	containerId,
 	lxdName,
@@ -79,6 +94,8 @@ export default function ContainerDetailSummary({
 }: ContainerDetailSummaryProps) {
 	const [point, setPoint] = useState<MetricPoint | null>(null);
 	const [cpuPercent, setCpuPercent] = useState<number | null>(null);
+	const [rxRate, setRxRate] = useState<number | null>(null);
+	const [txRate, setTxRate] = useState<number | null>(null);
 	const [status, setStatus] = useState(initialState);
 	const [currentOsImage, setCurrentOsImage] = useState(osImage);
 	const [currentIpAddresses, setCurrentIpAddresses] = useState(ipAddresses);
@@ -101,9 +118,10 @@ export default function ContainerDetailSummary({
 		}
 	};
 
-	const handleAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
+	const executeAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
 		setBusy(true);
 		setActionMessage({ type: "info", text: `Dispatching ${action} command…` });
+		toast.info(`Dispatching ${action} command for '${lxdName}'…`);
 
 		try {
 			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
@@ -114,15 +132,58 @@ export default function ContainerDetailSummary({
 
 			await refreshMetadata();
 			setActionMessage({ type: "success", text: `Container ${action} completed successfully.` });
+			toast.success(`Container '${lxdName}' ${action}ed successfully.`);
 		} catch (err) {
-			setActionMessage({
-				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
-			});
+			const errorText = err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.";
+			setActionMessage({ type: "error", text: errorText });
+			toast.error(err, `Failed to ${action} container`);
 		} finally {
 			setBusy(false);
 			window.setTimeout(() => setActionMessage(null), 4000);
 		}
+	};
+
+	const handleAction = async (action: "start" | "stop" | "restart" | "freeze" | "unfreeze") => {
+		if (action === "stop") {
+			const confirmed = await showConfirm({
+				title: "Stop Container",
+				message: `Are you sure you want to stop container '${lxdName}'? Active services will be halted.`,
+				confirmText: "Stop Container",
+				isDanger: false,
+				iconType: "warning",
+				onConfirm: () => executeAction(action),
+			});
+			if (!confirmed) return;
+			return;
+		}
+
+		if (action === "restart") {
+			const confirmed = await showConfirm({
+				title: "Restart Container",
+				message: `Restart container '${lxdName}'? All active processes inside the container will reboot.`,
+				confirmText: "Restart Container",
+				isDanger: false,
+				iconType: "info",
+				onConfirm: () => executeAction(action),
+			});
+			if (!confirmed) return;
+			return;
+		}
+
+		if (action === "freeze") {
+			const confirmed = await showConfirm({
+				title: "Freeze Container",
+				message: `Freeze container '${lxdName}'? All running processes will be paused in memory.`,
+				confirmText: "Freeze Container",
+				isDanger: false,
+				iconType: "warning",
+				onConfirm: () => executeAction(action),
+			});
+			if (!confirmed) return;
+			return;
+		}
+
+		await executeAction(action);
 	};
 
 	const handleLimitUpdate = async (): Promise<void> => {
@@ -143,11 +204,11 @@ export default function ContainerDetailSummary({
 			});
 
 			setActionMessage({ type: "success", text: "Resource limits updated successfully." });
+			toast.success(`Resource limits updated for '${lxdName}'.`);
 		} catch (err) {
-			setActionMessage({
-				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
-			});
+			const errorText = err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.";
+			setActionMessage({ type: "error", text: errorText });
+			toast.error(err, "Failed to update limits");
 		} finally {
 			setBusy(false);
 			window.setTimeout(() => setActionMessage(null), 4000);
@@ -155,39 +216,75 @@ export default function ContainerDetailSummary({
 	};
 
 	const handleDelete = async (): Promise<void> => {
-		if (!window.confirm(`Permanently delete container '${lxdName}'? This cannot be undone.`)) {
-			return;
-		}
-
-		setBusy(true);
-		setActionMessage({ type: "info", text: "Terminating and purging container…" });
-
-		try {
-			await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
-				method: "DELETE",
-			});
-			window.location.replace("/admin");
-		} catch (err) {
-			setActionMessage({
-				type: "error",
-				text: err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.",
-			});
-			setBusy(false);
-		}
+		await showConfirm({
+			title: "Delete Container",
+			message: `Permanently terminate and purge container '${lxdName}'? All local files and configurations will be destroyed. This action cannot be undone.`,
+			confirmText: "Delete Container",
+			cancelText: "Cancel",
+			isDanger: true,
+			iconType: "danger",
+			onConfirm: async () => {
+				setBusy(true);
+				setActionMessage({ type: "info", text: "Terminating and purging container…" });
+				try {
+					await apiFetch(`/api/containers/${encodeURIComponent(containerId)}`, {
+						method: "DELETE",
+					});
+					toast.success(`Container '${lxdName}' deleted successfully.`);
+					window.location.replace("/admin");
+				} catch (err) {
+					const errorText = err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.";
+					setActionMessage({ type: "error", text: errorText });
+					toast.error(err, "Failed to delete container");
+					setBusy(false);
+				}
+			},
+		});
 	};
 
 	const copyIp = async (ip: string) => {
 		try {
 			await navigator.clipboard.writeText(ip);
 			setCopiedIp(true);
+			toast.success(`IP address copied: ${ip}`, "Copied");
 			setTimeout(() => setCopiedIp(false), 2000);
 		} catch {
-			// ignore
+			toast.info(`Selected IP: ${ip}`, "IP Address");
 		}
 	};
 
 	useEffect(() => {
 		let cancelled = false;
+
+		async function initAndPoll(): Promise<void> {
+			try {
+				// Seed initial 2 points immediately so rates can be computed on first render
+				const recent = await apiFetch<{ container_id: string; count: number; points: MetricPoint[] }>(
+					`/api/metrics/recent?container=${encodeURIComponent(containerId)}&limit=2`,
+				).catch(() => null);
+
+				if (cancelled) return;
+
+				if (recent && recent.points.length > 0) {
+					const pts = recent.points;
+					const latestPt = pts[pts.length - 1];
+					setPoint(latestPt);
+					previousPoint.current = latestPt;
+
+					if (pts.length >= 2) {
+						const prevPt = pts[pts.length - 2];
+						const nextCpu = computeCpuPercent(prevPt, latestPt);
+						const nextRx = computeRate(prevPt, latestPt, "net_rx_bytes");
+						const nextTx = computeRate(prevPt, latestPt, "net_tx_bytes");
+						if (nextCpu !== null) setCpuPercent(nextCpu);
+						if (nextRx !== null) setRxRate(nextRx);
+						if (nextTx !== null) setTxRate(nextTx);
+					}
+				}
+			} catch {
+				// Fallback to regular poll
+			}
+		}
 
 		async function poll(): Promise<void> {
 			try {
@@ -198,13 +295,16 @@ export default function ContainerDetailSummary({
 				if (cancelled) return;
 
 				if (data.point === null) {
-					setPoint(null);
 					return;
 				}
 
-				if (previousPoint.current) {
+				if (previousPoint.current && previousPoint.current.time !== data.point.time) {
 					const nextCpu = computeCpuPercent(previousPoint.current, data.point);
+					const nextRx = computeRate(previousPoint.current, data.point, "net_rx_bytes");
+					const nextTx = computeRate(previousPoint.current, data.point, "net_tx_bytes");
 					if (nextCpu !== null) setCpuPercent(nextCpu);
+					if (nextRx !== null) setRxRate(nextRx);
+					if (nextTx !== null) setTxRate(nextTx);
 				}
 
 				previousPoint.current = data.point;
@@ -214,7 +314,10 @@ export default function ContainerDetailSummary({
 			}
 		}
 
-		void poll();
+		void initAndPoll().then(() => {
+			if (!cancelled) void poll();
+		});
+
 		const timerId = window.setInterval(poll, 5000);
 		return () => {
 			cancelled = true;
@@ -322,7 +425,12 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon cpu-icon'>⚡</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>CPU UTILIZATION</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>CPU UTILIZATION</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>
 								{cpuPercent === null ? "Measuring…" : `${cpuPercent.toFixed(1)}%`}
 							</span>
@@ -345,7 +453,12 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon ram-icon'>🧠</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>RAM ALLOCATION</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>RAM ALLOCATION</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>{point ? `${point.ram_used_mb.toFixed(0)} MB` : "0 MB"}</span>
 						</div>
 					</div>
@@ -363,7 +476,12 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon disk-icon'>💾</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>DISK STORAGE</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>DISK STORAGE</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>{point ? `${diskUsedGb.toFixed(2)} GB` : "0 GB"}</span>
 						</div>
 					</div>
@@ -381,17 +499,36 @@ export default function ContainerDetailSummary({
 					<div className='gauge-header'>
 						<div className='gauge-icon net-icon'>🌐</div>
 						<div className='gauge-title-wrap'>
-							<span className='gauge-label'>NETWORK & PROCS</span>
+							<div className='gauge-label-row'>
+								<span className='gauge-label'>NETWORK & PROCS</span>
+								<span className='live-badge-ticker'>
+									<span className='live-dot'></span> LIVE
+								</span>
+							</div>
 							<span className='gauge-main-val mono'>{point ? `${point.pid_count.toFixed(0)} PIDs` : "0 PIDs"}</span>
 						</div>
 					</div>
 					<div className='net-throughput-row mono'>
-						<span>↓ RX: {point ? formatBytes(point.net_rx_bytes) : "0 B"}</span>
-						<span>↑ TX: {point ? formatBytes(point.net_tx_bytes) : "0 B"}</span>
+						<span>
+							↓ RX:{" "}
+							{rxRate !== null ?
+								`${formatBytes(rxRate)}`
+							: point ?
+								formatBytes(point.net_rx_bytes)
+							:	"0 B"}
+						</span>
+						<span>
+							↑ TX:{" "}
+							{txRate !== null ?
+								`${formatBytes(txRate)}`
+							: point ?
+								formatBytes(point.net_tx_bytes)
+							:	"0 B"}
+						</span>
 					</div>
 					<div className='gauge-footer mono'>
 						<span>Architecture: {architecture}</span>
-						<span>Daemon Synced</span>
+						<span>Live Polling</span>
 					</div>
 				</div>
 			</div>

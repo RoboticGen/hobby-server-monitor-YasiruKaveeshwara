@@ -1,0 +1,32 @@
+[Unit]
+Description=Hobby Server Monitor Background Collector
+After=network.target lxd.service
+
+[Service]
+# Dedicated low-privilege OS user belonging to lxd group (decision 7.4)
+User=hsm-runner
+# Replace /opt/hobby-server-monitor with your actual project installation directory
+WorkingDirectory=/opt/hobby-server-monitor
+EnvironmentFile=/opt/hobby-server-monitor/backend/.env
+
+# Run the independent collector loop
+ExecStart=/opt/hobby-server-monitor/.venv/bin/python -m backend.collector.collector
+Restart=on-failure
+RestartSec=5
+
+# --- Sandboxing ---
+# Same reasoning as hsm-api.service: hsm-runner is in the lxd group, which is
+# effectively root-equivalent, so both units are confined rather than trusted.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+# Required because ProtectSystem=strict mounts everything read-only. The
+# collector writes metrics.tinyflux on every cycle and app.db during retention;
+# it also connects to the LXD socket, which counts as a write on that inode.
+ReadWritePaths=/opt/hobby-server-monitor/data
+ReadWritePaths=/var/snap/lxd/common/lxd
+
+[Install]
+WantedBy=multi-user.target

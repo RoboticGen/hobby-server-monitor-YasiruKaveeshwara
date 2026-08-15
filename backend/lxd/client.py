@@ -193,10 +193,22 @@ def create_container(
     else:
         source["alias"] = image
 
+    # Force unprivileged. A privileged container's root maps to the host's
+    # root, so a breakout is a host compromise -- this is the one config key
+    # whose value must never come from a caller. It is applied last so it
+    # overrides `limits` even if a future caller passes the key, which is why
+    # the assignment order here matters. The resource layer already builds
+    # `limits` from a closed allowlist (limits.memory / limits.cpu /
+    # boot.autostart), so today nothing can reach this dict with the key set;
+    # this is the second layer, at the single point where every container in
+    # the system is created, so it holds regardless of what any future caller
+    # does. Decision 7.7 / 7.4.
+    lxd_config = {**limits, "security.privileged": "false"}
+
     container_config = {
         "name": name,
         "source": source,
-        "config": limits,
+        "config": lxd_config,
         # LXD deletes an ephemeral container as soon as it stops, so this
         # is a top-level property rather than a config key.
         "ephemeral": ephemeral,
@@ -216,11 +228,20 @@ def create_container(
     if network:
         devices["eth0"] = {"type": "nic", "network": network, "name": "eth0"}
     if storage_pool:
-        # NOTE: no "size" key here, so this selects which pool the root
-        # disk lives on without imposing a disk quota. See the step summary
-        # — limit_disk_gb is recorded in the DB but has never been applied
-        # to LXD, and starting to enforce it is a behaviour change beyond
-        # the scope of adding pool selection.
+        # No "size" key: this selects which pool the root disk lives on and
+        # deliberately imposes no quota. limit_disk_gb is counted against the
+        # user's quota in the DB but never reaches LXD, so disk is an
+        # allocation ledger rather than an enforced limit.
+        #
+        # Adding "size" here would not fix that, because whether LXD honours
+        # it depends on the pool's driver. A "dir" pool accepts the key and
+        # silently ignores it -- measured: `config device show` reports
+        # size: 2GB while `df` inside the container reports the host's full
+        # capacity, with no error. Setting it unconditionally would display a
+        # quota that does not exist, which is worse than not setting it.
+        # Real enforcement needs a size-capable driver (btrfs/zfs/lvm/ceph),
+        # so it belongs behind a driver check on list_storage_pools() rather
+        # than here. Documented in backend/README.md section 16.
         devices["root"] = {"type": "disk", "pool": storage_pool, "path": "/"}
     if devices:
         container_config["devices"] = devices
@@ -572,21 +593,43 @@ def get_container_state(lxd_name: str) -> dict:
     ram_used_mb = float(_get_val(mem, "usage", 0.0) or 0.0) / (1024 * 1024)
     ram_peak_mb = float(_get_val(mem, "usage_peak", 0.0) or 0.0) / (1024 * 1024)
 
-    # Disk usage: look up the root device
+    # Disk usage: look up the root device or sum all devices
     disk = _get_val(state, "disk")
-    root_disk = _get_val(disk, "root")
-    disk_used_mb = float(_get_val(root_disk, "usage", 0.0) or 0.0) / (1024 * 1024)
+    disk_used_mb = 0.0
+    if disk:
+        if isinstance(disk, dict) and "root" in disk:
+            disk_used_mb = float(_get_val(disk["root"], "usage", 0.0) or 0.0) / (
+                1024 * 1024
+            )
+        elif isinstance(disk, dict):
+            total_bytes = sum(
+                float(_get_val(d, "usage", 0.0) or 0.0)
+                for d in disk.values()
+                if d is not None
+            )
+            disk_used_mb = total_bytes / (1024 * 1024)
+        else:
+            root_disk = _get_val(disk, "root")
+            disk_used_mb = float(_get_val(root_disk, "usage", 0.0) or 0.0) / (
+                1024 * 1024
+            )
 
-    # Network I/O: sum across all interfaces
+    # Network I/O: sum across all interfaces, excluding loopback
     net_rx_bytes = 0.0
     net_tx_bytes = 0.0
     net = _get_val(state, "network")
     if net:
-        if isinstance(net, dict) or hasattr(net, "values"):
-            ifaces = net.values()
+        if isinstance(net, dict):
+            ifaces = list(net.items())
+        elif hasattr(net, "items"):
+            ifaces = list(net.items())
+        elif isinstance(net, list):
+            ifaces = [(getattr(x, "name", ""), x) for x in net]
         else:
-            ifaces = [net]
-        for iface_data in ifaces:
+            ifaces = [("", net)]
+        for iface_name, iface_data in ifaces:
+            if iface_name == "lo":
+                continue
             counters = _get_val(iface_data, "counters")
             net_rx_bytes += float(_get_val(counters, "bytes_received", 0.0) or 0.0)
             net_tx_bytes += float(_get_val(counters, "bytes_sent", 0.0) or 0.0)

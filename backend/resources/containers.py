@@ -13,6 +13,7 @@ import falcon
 from pylxd.exceptions import LXDAPIException
 
 from backend.auth.middleware import require_role
+from backend.collector import sampler
 from backend.db import repo
 from backend.lxd import client as lxd_client
 from backend.lxd.client import LXDUnavailableError
@@ -134,21 +135,19 @@ class ContainerListResource:
         user_id = req.context.user["id"]
         role = req.context.user["role"]
 
+        import concurrent.futures
+
         if role == "admin":
             # Admins see every active container
             containers = repo.list_active_containers()
         else:
             # Regular users see only their assigned containers
-            assignments = repo.list_assignments_for_user(user_id)
-            containers = []
-            for assignment in assignments:
-                container = repo.get_container_by_id(assignment["container_id"])
-                # Only include active (not soft-deleted) containers
-                if container and container["deleted_at"] is None:
-                    containers.append(container)
+            containers = repo.list_assigned_active_containers(user_id)
 
-        # Enrich each DB record with live LXD state (status, config)
-        enriched = [_enrich_with_lxd_state(c) for c in containers]
+        # Enrich each DB record with live LXD state (status, config) concurrently
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            enriched = list(executor.map(_enrich_with_lxd_state, containers))
+
         resp.media = {"containers": enriched}
 
     def on_post(self, req: falcon.Request, resp: falcon.Response) -> None:
@@ -340,6 +339,15 @@ class ContainerListResource:
             + (f", assigned to {assign_to}" if assign_to else ""),
         )
 
+        # Same immediate sample as the state actions below. LXD creates a
+        # container stopped, so this normally finds nothing readable and skips;
+        # it is here for the case where the container comes up on its own (an
+        # autostart profile), so that path does not have to wait for the
+        # collector either.
+        sampler.try_sample_container(
+            {"id": container_id, "lxd_name": name}, reason="create"
+        )
+
         resp.status = falcon.HTTP_201
         resp.media = {
             "id": container_id,
@@ -351,6 +359,12 @@ class ContainerListResource:
 
 # Valid state actions accepted by the PATCH endpoint
 _VALID_STATE_ACTIONS = {"start", "stop", "restart", "freeze", "unfreeze"}
+
+# The subset of the above that ends with the container running and therefore
+# reporting readable metrics. Used to decide whether to take an immediate
+# sample after the action — sampling a container we just stopped or froze
+# would only log a skip.
+_ACTIONS_THAT_LEAVE_IT_RUNNING = {"start", "restart", "unfreeze"}
 
 
 class ContainerDetailResource:
@@ -429,6 +443,17 @@ class ContainerDetailResource:
                 target=container_id,
                 detail=f"{action} container '{container['lxd_name']}'",
             )
+
+            # Take one metric sample right now, so a container the user just
+            # brought up has a data point before the browser asks for one.
+            # Without this the live graphs read "Measuring…" until the next
+            # collector tick, which is up to COLLECTOR_INTERVAL_SECONDS away
+            # and twice that for CPU and network, since those are rates and
+            # need two points to difference. Best-effort by construction: a
+            # stopped or still-booting container raises inside LXD and the
+            # sample is skipped, never failing the state change itself.
+            if action in _ACTIONS_THAT_LEAVE_IT_RUNNING:
+                sampler.try_sample_container(container, reason=action)
 
             resp.media = {
                 "id": container_id,

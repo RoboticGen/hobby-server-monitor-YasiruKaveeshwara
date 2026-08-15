@@ -407,6 +407,24 @@ def list_active_containers() -> list[dict]:
         conn.close()
 
 
+def list_assigned_active_containers(user_id: str) -> list[dict]:
+    """Return all active (not soft-deleted) containers assigned to a user."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT c.* FROM containers c
+            JOIN assignments a ON a.container_id = c.id
+            WHERE a.user_id = ? AND a.active = 1 AND c.deleted_at IS NULL
+            ORDER BY c.created_at
+            """,
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def list_assignees(container_id: str) -> list[dict]:
     """Return the users a container is actively assigned to.
 

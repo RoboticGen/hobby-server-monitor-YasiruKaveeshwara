@@ -35,9 +35,7 @@ def compute_user_allocation(user_id: str, conn=None) -> dict:
     total_disk = 0
 
     for assignment in assignments:
-        container = repo.get_container_by_id(
-            assignment["container_id"], conn=conn
-        )
+        container = repo.get_container_by_id(assignment["container_id"], conn=conn)
         # Skip containers that have been soft-deleted or can't be found
         if container is None or container["deleted_at"] is not None:
             continue

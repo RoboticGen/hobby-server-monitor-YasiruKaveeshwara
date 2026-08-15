@@ -111,6 +111,15 @@ const LIVE_MAX_POINTS = 720;
 const LIVE_POLL_MS = 5_000;
 const BUNDLE_REFRESH_MS = 30_000;
 
+// A CPU percentage and a network rate are both differences between two counter
+// readings, so the live view needs two points before it can draw either. Until
+// then it asks the API for a fresh sample (`fresh=1`) on a faster timer: a
+// container that has only just started would otherwise show "Measuring…" for
+// up to two collector intervals. The server ignores `fresh` once two points
+// exist, so this cannot keep pulling on LXD — see LatestMetricsResource.
+const CHARTABLE_MINIMUM = 2;
+const COLD_START_POLL_MS = 1_000;
+
 const VIEW_MODES: Array<{ value: ViewMode; label: string }> = [
 	{ value: "live", label: "Live (5s)" },
 	{ value: "1h", label: "1h Window" },
@@ -136,6 +145,10 @@ export default function ContainerResourceGraphs({
 
 	const latestLivePoint = livePoints.at(-1) ?? null;
 
+	// Newest timestamp already in livePoints, tracked separately from state so
+	// the poll callback can dedupe without being re-created on every point.
+	const latestTimeRef = useRef<string | null>(null);
+
 	useEffect(() => {
 		let cancelled = false;
 
@@ -148,8 +161,15 @@ export default function ContainerResourceGraphs({
 
 				if (data.points.length > 0) {
 					setLivePoints(data.points);
+					// Remember the newest seeded timestamp, so the first poll
+					// does not append a point the seed already contains. A
+					// duplicate would sit in the series with a zero time delta
+					// and silently drop a CPU/network sample, since both are
+					// computed by differencing against the previous point.
+					latestTimeRef.current = data.points[data.points.length - 1].time;
 					setLiveStatus(`Live stream (${data.points.length} samples buffered)`);
 				} else {
+					latestTimeRef.current = null;
 					setLiveStatus("Awaiting first collector metrics…");
 				}
 				setSeeded(true);
@@ -173,7 +193,10 @@ export default function ContainerResourceGraphs({
 		};
 	}, [containerId]);
 
-	const latestTimeRef = useRef<string | null>(null);
+	// Below the two-point floor the live view cannot draw a rate, so it polls
+	// faster and asks the server for a fresh sample. Flips to false once, which
+	// re-arms the interval below at its normal cadence.
+	const isColdStart = livePoints.length < CHARTABLE_MINIMUM;
 
 	useEffect(() => {
 		if (!seeded) return;
@@ -182,8 +205,21 @@ export default function ContainerResourceGraphs({
 
 		async function poll(): Promise<void> {
 			try {
-				const data = await apiFetch<LatestResponse>(`/api/metrics/latest?container=${encodeURIComponent(containerId)}`);
-				if (cancelled || data.point === null) return;
+				const query = new URLSearchParams({ container: containerId });
+				if (isColdStart) query.set("fresh", "1");
+
+				const data = await apiFetch<LatestResponse>(`/api/metrics/latest?${query}`);
+				if (cancelled) return;
+
+				if (data.point === null) {
+					// Nothing stored yet and nothing sampleable — the container
+					// is not running, or LXD could not be read. Say so instead
+					// of leaving the toolbar on its pre-load message while all
+					// four tiles read "Measuring…".
+					setLiveStatus("No samples yet — is the container running?");
+					setLiveError(null);
+					return;
+				}
 
 				if (data.point.time === latestTimeRef.current) return;
 				latestTimeRef.current = data.point.time;
@@ -192,7 +228,11 @@ export default function ContainerResourceGraphs({
 					const next = [...prev, data.point!];
 					return next.slice(-LIVE_MAX_POINTS);
 				});
-				setLiveStatus("Live stream active (polling 5s)");
+				setLiveStatus(
+					isColdStart ?
+						"First samples in — starting live stream…"
+					:	`Live stream active (polling ${LIVE_POLL_MS / 1000}s)`,
+				);
 				setLiveError(null);
 			} catch (err) {
 				if (cancelled) return;
@@ -200,14 +240,14 @@ export default function ContainerResourceGraphs({
 			}
 		}
 
-		const timerId = window.setInterval(poll, LIVE_POLL_MS);
+		const timerId = window.setInterval(poll, isColdStart ? COLD_START_POLL_MS : LIVE_POLL_MS);
 		void poll();
 
 		return () => {
 			cancelled = true;
 			window.clearInterval(timerId);
 		};
-	}, [containerId, seeded]);
+	}, [containerId, seeded, isColdStart]);
 
 	useEffect(() => {
 		if (viewMode === "live") {
@@ -250,7 +290,7 @@ export default function ContainerResourceGraphs({
 		};
 	}, [containerId, viewMode]);
 
-	const points = viewMode === "live" ? livePoints : (bundleHistory?.points ?? []);
+	const points = viewMode === "live" ? livePoints.slice(-30) : (bundleHistory?.points ?? []);
 
 	const cpuSeries = useMemo(() => buildCpuSeries(points), [points]);
 	const ramSeries = useMemo(() => buildValueSeries(points, (r) => r.ram_used_mb), [points]);
@@ -276,7 +316,11 @@ export default function ContainerResourceGraphs({
 		<section className='resource-graphs-section' aria-label='Resource usage graphs'>
 			<div className='graphs-toolbar'>
 				<div className='toolbar-left'>
-					<span className='pulse-dot'></span>
+					{viewMode === "live" ?
+						<span className='live-badge-ticker'>
+							<span className='live-dot'></span> LIVE (5s)
+						</span>
+					:	<span className='pulse-dot'></span>}
 					<span className='toolbar-status'>{statusMessage}</span>
 				</div>
 				<div className='view-mode-selector' role='group' aria-label='View mode'>
@@ -285,7 +329,7 @@ export default function ContainerResourceGraphs({
 							type='button'
 							key={m.value}
 							className={`mode-btn ${viewMode === m.value ? "active" : ""}`}
-							aria-pressed={String(m.value === viewMode)}
+							aria-pressed={viewMode === m.value}
 							onClick={() => setViewMode(m.value)}>
 							{m.label}
 						</button>
@@ -302,17 +346,24 @@ export default function ContainerResourceGraphs({
 						<div>
 							<h4>CPU Load</h4>
 							<p className='graph-stat-val mono'>
-								{currentPoint === null && latestCpuPercent === null ?
+								{latestCpuPercent !== null ?
+									formatPercent(latestCpuPercent)
+								: currentPoint === null ?
 									"Measuring…"
-								: latestCpuPercent === null ?
-									"Measuring…"
-								:	formatPercent(latestCpuPercent)}
+								:	"Awaiting 2nd sample…"}
 							</p>
 						</div>
 						<span className='graph-limit-tag'>{cpuAllocated} core(s)</span>
 					</header>
 					{cpuSeries.length > 0 ?
-						<HistoryChart points={cpuSeries} height={130} color='#06b6d4' />
+						<HistoryChart
+							points={cpuSeries}
+							height={150}
+							color='#0284c7'
+							formatValue={(v) => `${v.toFixed(1)}%`}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>
@@ -331,7 +382,14 @@ export default function ContainerResourceGraphs({
 						<span className='graph-limit-tag'>{ramAllocatedMb} MB limit</span>
 					</header>
 					{ramSeries.length > 0 ?
-						<HistoryChart points={ramSeries} height={130} color='#38bdf8' />
+						<HistoryChart
+							points={ramSeries}
+							height={150}
+							color='#059669'
+							formatValue={(v) => `${v.toFixed(0)} MB`}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>
@@ -352,7 +410,14 @@ export default function ContainerResourceGraphs({
 						<span className='graph-limit-tag'>{diskAllocatedGb} GB limit</span>
 					</header>
 					{diskSeries.length > 0 ?
-						<HistoryChart points={diskSeries} height={130} color='#8b5cf6' />
+						<HistoryChart
+							points={diskSeries}
+							height={150}
+							color='#8b5cf6'
+							formatValue={(v) => `${v.toFixed(2)} GB`}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>
@@ -365,17 +430,24 @@ export default function ContainerResourceGraphs({
 						<div>
 							<h4>Network I/O</h4>
 							<p className='graph-stat-val mono'>
-								{currentPoint === null && latestNetworkRate === null ?
+								{latestNetworkRate !== null ?
+									formatBytes(latestNetworkRate)
+								: currentPoint === null ?
 									"Measuring…"
-								: latestNetworkRate === null ?
-									"Measuring…"
-								:	formatBytes(latestNetworkRate)}
+								:	"Awaiting 2nd sample…"}
 							</p>
 						</div>
 						<span className='graph-limit-tag'>RX + TX Aggregate</span>
 					</header>
 					{networkSeries.length > 0 ?
-						<HistoryChart points={networkSeries} height={130} color='#10b981' />
+						<HistoryChart
+							points={networkSeries}
+							height={150}
+							color='#d97706'
+							formatValue={formatBytes}
+							isLive={viewMode === "live"}
+							timeWindowLabel={viewMode}
+						/>
 					:	<div className='graph-empty-state'>
 							<span>Collecting telemetry…</span>
 						</div>

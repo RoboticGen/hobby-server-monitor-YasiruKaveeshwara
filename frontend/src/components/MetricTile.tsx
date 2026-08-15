@@ -29,10 +29,10 @@ export interface MetricTileProps {
 	containerId: string;
 	name: string;
 	state: string;
-	osImage: string;
-	ipAddresses: string[];
-	createdAt: string;
-	processCount: number;
+	osImage?: string;
+	ipAddresses?: string[];
+	createdAt?: string;
+	processCount?: number;
 	ramAllocatedMb: number;
 	diskAllocatedGb: number;
 	initialPoint?: MetricPoint | null;
@@ -98,10 +98,10 @@ export default function MetricTile({
 	containerId,
 	name,
 	state,
-	osImage,
-	ipAddresses,
-	createdAt,
-	processCount,
+	osImage = "Linux",
+	ipAddresses = [],
+	createdAt = "",
+	processCount = 0,
 	ramAllocatedMb,
 	diskAllocatedGb,
 	initialPoint = null,
@@ -119,9 +119,15 @@ export default function MetricTile({
 
 		async function poll(): Promise<void> {
 			try {
-				const data = await apiFetch<LatestMetricsResponse>(
-					`/api/metrics/latest?container=${encodeURIComponent(containerId)}`,
-				);
+				// `fresh=1` while this tile has no previous point to difference
+				// against: a container that has only just started has nothing
+				// stored, and CPU/network are rates that need two readings. The
+				// server honours it only below that two-point floor, so an
+				// established container never puts this on LXD.
+				const query = new URLSearchParams({ container: containerId });
+				if (previousPoint.current === null) query.set("fresh", "1");
+
+				const data = await apiFetch<LatestMetricsResponse>(`/api/metrics/latest?${query}`);
 				if (cancelled) return;
 
 				if (data.point === null) {
@@ -169,7 +175,14 @@ export default function MetricTile({
 					<h3 className='tile-title' title={name}>
 						{name}
 					</h3>
-					<span className={`status-badge ${normalizedState}`}>{state === "Unknown" ? "Error" : state}</span>
+					<div className='tile-header-badges'>
+						{normalizedState === "running" && (
+							<span className='live-badge-ticker'>
+								<span className='live-dot'></span> LIVE
+							</span>
+						)}
+						<span className={`status-badge ${normalizedState}`}>{state === "Unknown" ? "Error" : state}</span>
+					</div>
 				</div>
 
 				<div className='tile-meta'>

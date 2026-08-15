@@ -6,6 +6,7 @@
  */
 import { useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast } from "../lib/alerts";
 
 export interface QuotaAllocation {
 	ram_mb: number;
@@ -90,8 +91,11 @@ export default function UserQuotaEditor({
 
 		if (Object.keys(patch).length === 0) {
 			setSaving(false);
+			toast.info("No quota changes to save.");
 			return;
 		}
+
+		toast.info("Updating user resource quotas…");
 
 		try {
 			const updated = await apiFetch<UpdatedUser>(`/api/users/${encodeURIComponent(userId)}`, {
@@ -106,9 +110,12 @@ export default function UserQuotaEditor({
 				diskGb: updated.quota_disk_gb,
 			});
 			setSaved(true);
+			toast.success("Resource quotas updated successfully.", "Quotas Saved");
 			onSaved?.();
 		} catch (err) {
-			setError(err instanceof ApiError ? err.message : "Could not reach the server to save quotas.");
+			const errorMsg = err instanceof ApiError ? err.message : "Could not reach the server to save quotas.";
+			setError(errorMsg);
+			toast.error(err, "Failed to Save Quotas");
 		} finally {
 			setSaving(false);
 		}

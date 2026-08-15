@@ -884,7 +884,6 @@ tr:hover td {
 }
 
 @keyframes cyber-pulse {
-
 	0%,
 	100% {
 		opacity: 1;
@@ -1015,10 +1014,12 @@ html.session-cached #header-identity[hidden] {
 
 /* Shimmer Skeleton Base Styles */
 .skeleton-shimmer {
-	background: linear-gradient(90deg,
-			rgba(226, 232, 240, 0.6) 25%,
-			rgba(241, 245, 249, 0.9) 50%,
-			rgba(226, 232, 240, 0.6) 75%);
+	background: linear-gradient(
+		90deg,
+		rgba(226, 232, 240, 0.6) 25%,
+		rgba(241, 245, 249, 0.9) 50%,
+		rgba(226, 232, 240, 0.6) 75%
+	);
 	background-size: 200% 100%;
 	animation: shimmer 1.6s ease-in-out infinite;
 	border-radius: var(--radius-xs);
@@ -2356,6 +2357,246 @@ html.session-cached #header-identity[hidden] {
 	font-family: var(--font-mono);
 }
 
+.graph-limit-tag {
+	font-size: 0.725rem;
+	font-weight: 600;
+	color: var(--text-muted);
+	background: var(--bg-canvas-subtle);
+	padding: 0.2rem 0.55rem;
+	border-radius: var(--radius-xs);
+	border: 1px solid var(--border-subtle);
+	font-family: var(--font-mono);
+}
+
+/* --- History Chart & Real-Time Telemetry Streaming --- */
+.history-chart-wrapper {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	background: #f8fafc;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	padding: 0.85rem 1rem 0.65rem 1rem;
+	position: relative;
+	overflow: visible;
+}
+
+.chart-stat-strip {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 0.5rem;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+
+.chart-stat-group {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.chart-stat-item {
+	display: flex;
+	align-items: baseline;
+	gap: 0.35rem;
+}
+
+.chart-stat-item.current {
+	background: #ffffff;
+	padding: 0.15rem 0.55rem;
+	border-radius: var(--radius-xs);
+	border: 1px solid var(--border-subtle);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.chart-stat-item .stat-label {
+	font-size: 0.65rem;
+	font-weight: 700;
+	color: var(--text-muted);
+	letter-spacing: 0.05em;
+}
+
+.chart-stat-item .stat-value {
+	font-size: 0.75rem;
+	font-weight: 700;
+	color: var(--text-primary);
+	font-family: var(--font-mono);
+}
+
+.chart-stat-item .stat-value.highlight {
+	font-size: 0.85rem;
+	font-weight: 800;
+}
+
+.svg-chart-container {
+	position: relative;
+	width: 100%;
+	overflow: visible;
+}
+
+.history-chart {
+	width: 100%;
+	height: auto;
+	overflow: visible;
+	display: block;
+}
+
+.live-beacon-pulse {
+	animation: beacon-pulse 2s cubic-bezier(0.25, 1, 0.5, 1) infinite;
+	transform-origin: center;
+}
+
+@keyframes beacon-pulse {
+	0% {
+		r: 4.5;
+		opacity: 0.8;
+	}
+	50% {
+		r: 12;
+		opacity: 0.15;
+	}
+	100% {
+		r: 16;
+		opacity: 0;
+	}
+}
+
+/* Real-time waveform: the React component recalculates X positions on
+   every 1-second tick, so the path attribute itself changes. These
+   transitions smooth SVG attribute changes between frames.
+   .chart-wave-stream motion is driven by coordinate recalculation,
+   no CSS translateX needed. */
+
+.chart-curve-line {
+	transition: filter 0.3s ease;
+}
+
+.chart-node-dot {
+	transition:
+		cx 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+		cy 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chart-area-fill {
+	transition: opacity 0.5s ease;
+}
+
+.live-moving-grid {
+	animation: grid-scroll-subtle 5s linear infinite;
+}
+
+@keyframes grid-scroll-subtle {
+	0% {
+		transform: translateX(0);
+	}
+	100% {
+		transform: translateX(-24px);
+	}
+}
+
+.chart-hover-tooltip {
+	position: absolute;
+	transform: translate(-50%, -115%);
+	pointer-events: none;
+	background: rgba(15, 23, 42, 0.92);
+	backdrop-filter: blur(8px);
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	border-radius: var(--radius-xs);
+	padding: 0.3rem 0.6rem;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+	z-index: 10;
+	white-space: nowrap;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.1rem;
+	transition:
+		left 0.08s ease,
+		top 0.08s ease;
+}
+
+.chart-hover-tooltip .tooltip-val {
+	font-size: 0.8rem;
+	font-weight: 800;
+	font-family: var(--font-mono);
+}
+
+.chart-hover-tooltip .tooltip-time {
+	font-size: 0.65rem;
+	font-weight: 500;
+	color: #94a3b8;
+	font-family: var(--font-mono);
+}
+
+.chart-time-axis {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-top: 0.4rem;
+	padding-top: 0.35rem;
+	border-top: 1px dashed var(--border-subtle);
+	font-size: 0.675rem;
+	color: var(--text-muted);
+	font-family: var(--font-mono);
+	font-weight: 600;
+}
+
+.axis-live-now {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	color: #059669;
+	font-weight: 700;
+}
+
+.axis-live-now .live-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: #059669;
+	box-shadow: 0 0 6px #059669;
+	animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+	0%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 0.4;
+		transform: scale(0.75);
+	}
+}
+
+.live-badge-ticker {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	padding: 0.2rem 0.55rem;
+	background: rgba(5, 150, 105, 0.08);
+	border: 1px solid rgba(5, 150, 105, 0.25);
+	border-radius: var(--radius-full);
+	font-size: 0.725rem;
+	font-weight: 700;
+	color: #059669;
+}
+
+.tile-header-badges {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+
+.gauge-label-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	width: 100%;
+}
+
 /* Form Footer */
 .invite-form-footer {
 	display: flex;
@@ -2379,4 +2620,387 @@ html.session-cached #header-identity[hidden] {
 
 .invite-submit-btn:hover .btn-arrow {
 	transform: translateX(3px);
+}
+
+/* ============================================================================
+   UNIFIED POPUP ALERT, TOAST NOTIFICATION & CONFIRMATION MODAL SYSTEM
+   ============================================================================ */
+
+/* --- Toast Viewport & Floating Stack --- */
+.hsm-toast-viewport {
+	position: fixed;
+	top: 1.25rem;
+	right: 1.25rem;
+	z-index: 10000;
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+	pointer-events: none;
+	max-width: 420px;
+	width: calc(100vw - 2.5rem);
+}
+
+.hsm-toast-item {
+	pointer-events: auto;
+	background: rgba(255, 255, 255, 0.98);
+	backdrop-filter: blur(16px);
+	border-radius: var(--radius-md);
+	box-shadow:
+		0 10px 25px -5px rgba(15, 23, 42, 0.12),
+		0 8px 10px -6px rgba(15, 23, 42, 0.06);
+	border: 1px solid var(--border-subtle);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	animation: toast-slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+	transition: all 0.2s ease;
+	position: relative;
+}
+
+.hsm-toast-item.exiting {
+	animation: toast-fade-out 0.2s ease forwards;
+}
+
+/* Semantic Toast Borders & Glows */
+.hsm-toast-item.toast-success {
+	border-left: 4px solid var(--status-running, #059669);
+	box-shadow:
+		0 8px 20px -4px rgba(5, 150, 105, 0.12),
+		0 4px 6px -2px rgba(15, 23, 42, 0.05);
+}
+
+.hsm-toast-item.toast-error {
+	border-left: 4px solid var(--status-stopped, #e11d48);
+	box-shadow:
+		0 8px 20px -4px rgba(225, 29, 72, 0.15),
+		0 4px 6px -2px rgba(15, 23, 42, 0.05);
+}
+
+.hsm-toast-item.toast-warning {
+	border-left: 4px solid var(--status-frozen, #d97706);
+	box-shadow:
+		0 8px 20px -4px rgba(217, 119, 6, 0.12),
+		0 4px 6px -2px rgba(15, 23, 42, 0.05);
+}
+
+.hsm-toast-item.toast-info {
+	border-left: 4px solid var(--accent-cyan, #0284c7);
+	box-shadow:
+		0 8px 20px -4px rgba(2, 132, 199, 0.12),
+		0 4px 6px -2px rgba(15, 23, 42, 0.05);
+}
+
+/* Toast Body */
+.hsm-toast-body {
+	padding: 0.85rem 1rem;
+	display: flex;
+	align-items: flex-start;
+	gap: 0.75rem;
+}
+
+.hsm-toast-icon-wrap {
+	flex-shrink: 0;
+	width: 22px;
+	height: 22px;
+	margin-top: 1px;
+}
+
+.toast-success .hsm-toast-icon-wrap {
+	color: #059669;
+}
+
+.toast-error .hsm-toast-icon-wrap {
+	color: #e11d48;
+}
+
+.toast-warning .hsm-toast-icon-wrap {
+	color: #d97706;
+}
+
+.toast-info .hsm-toast-icon-wrap {
+	color: #0284c7;
+}
+
+.hsm-toast-content {
+	flex: 1;
+	min-width: 0;
+}
+
+.hsm-toast-title {
+	font-size: 0.85rem;
+	font-weight: 700;
+	color: var(--text-primary);
+	margin-bottom: 0.2rem;
+	line-height: 1.3;
+}
+
+.hsm-toast-msg {
+	font-size: 0.8rem;
+	color: var(--text-secondary);
+	line-height: 1.45;
+	word-break: break-word;
+}
+
+.hsm-toast-action-btn {
+	margin-top: 0.45rem;
+	background: var(--bg-canvas-subtle);
+	border: 1px solid var(--border-subtle);
+	color: var(--accent-cyan);
+	font-size: 0.75rem;
+	font-weight: 700;
+	padding: 0.25rem 0.6rem;
+	border-radius: var(--radius-xs);
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.hsm-toast-action-btn:hover {
+	background: #e2e8f0;
+}
+
+.hsm-toast-close-btn {
+	background: transparent;
+	border: none;
+	padding: 0.2rem;
+	cursor: pointer;
+	color: var(--text-dim);
+	border-radius: var(--radius-xs);
+	line-height: 1;
+	transition: all 0.15s ease;
+	flex-shrink: 0;
+}
+
+.hsm-toast-close-btn:hover {
+	color: var(--text-primary);
+	background: #f1f5f9;
+}
+
+/* Progress Countdown Bar */
+.hsm-toast-progress-track {
+	height: 3px;
+	width: 100%;
+	background: rgba(15, 23, 42, 0.04);
+}
+
+.hsm-toast-progress-bar {
+	height: 100%;
+	width: 100%;
+	transform-origin: left;
+	animation: toast-progress linear forwards;
+}
+
+.toast-success .hsm-toast-progress-bar {
+	background: #059669;
+}
+
+.toast-error .hsm-toast-progress-bar {
+	background: #e11d48;
+}
+
+.toast-warning .hsm-toast-progress-bar {
+	background: #d97706;
+}
+
+.toast-info .hsm-toast-progress-bar {
+	background: #0284c7;
+}
+
+/* --- Confirmation & Alert Modal --- */
+.hsm-modal-backdrop {
+	position: fixed;
+	inset: 0;
+	background: rgba(15, 23, 42, 0.45);
+	backdrop-filter: blur(8px);
+	z-index: 10050;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 1.25rem;
+	animation: modal-fade-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hsm-confirm-card {
+	background: #ffffff;
+	border: 1px solid var(--border-medium);
+	border-radius: var(--radius-lg);
+	width: 100%;
+	max-width: 460px;
+	box-shadow:
+		0 20px 35px -10px rgba(15, 23, 42, 0.25),
+		0 10px 15px -5px rgba(15, 23, 42, 0.1);
+	overflow: hidden;
+	animation: modal-scale-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+	display: flex;
+	flex-direction: column;
+}
+
+.hsm-confirm-header {
+	padding: 1.35rem 1.35rem 0.75rem 1.35rem;
+	display: flex;
+	align-items: center;
+	gap: 0.85rem;
+}
+
+.hsm-confirm-icon-badge {
+	width: 44px;
+	height: 44px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.hsm-confirm-icon-badge.danger {
+	background: rgba(225, 29, 72, 0.1);
+	color: #e11d48;
+	border: 1px solid rgba(225, 29, 72, 0.25);
+}
+
+.hsm-confirm-icon-badge.warning {
+	background: rgba(217, 119, 6, 0.1);
+	color: #d97706;
+	border: 1px solid rgba(217, 119, 6, 0.25);
+}
+
+.hsm-confirm-icon-badge.info {
+	background: rgba(2, 132, 199, 0.1);
+	color: #0284c7;
+	border: 1px solid rgba(2, 132, 199, 0.25);
+}
+
+.hsm-confirm-title {
+	font-size: 1.1rem;
+	font-weight: 700;
+	color: var(--text-primary);
+	margin: 0;
+	line-height: 1.3;
+}
+
+.hsm-confirm-body {
+	padding: 0.5rem 1.35rem 1.35rem 1.35rem;
+	font-size: 0.9rem;
+	color: var(--text-secondary);
+	line-height: 1.55;
+}
+
+.hsm-confirm-footer {
+	padding: 0.9rem 1.35rem;
+	background: #f8fafc;
+	border-top: 1px solid var(--border-subtle);
+	display: flex;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.btn-modal-cancel {
+	background: #ffffff;
+	border: 1px solid var(--border-medium);
+	color: var(--text-secondary);
+	font-size: 0.875rem;
+	font-weight: 600;
+	padding: 0.6rem 1.15rem;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.btn-modal-cancel:hover:not(:disabled) {
+	background: #f1f5f9;
+	color: var(--text-primary);
+	border-color: #94a3b8;
+}
+
+.btn-modal-confirm {
+	font-size: 0.875rem;
+	font-weight: 700;
+	padding: 0.6rem 1.3rem;
+	border-radius: var(--radius-sm);
+	border: none;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	transition: all 0.15s ease;
+}
+
+.btn-modal-confirm.danger {
+	background: #e11d48;
+	color: #ffffff;
+	box-shadow: 0 2px 8px rgba(225, 29, 72, 0.28);
+}
+
+.btn-modal-confirm.danger:hover:not(:disabled) {
+	background: #be123c;
+	box-shadow: 0 4px 12px rgba(225, 29, 72, 0.35);
+}
+
+.btn-modal-confirm.primary {
+	background: #0284c7;
+	color: #ffffff;
+	box-shadow: 0 2px 8px rgba(2, 132, 199, 0.28);
+}
+
+.btn-modal-confirm.primary:hover:not(:disabled) {
+	background: #0369a1;
+	box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35);
+}
+
+.btn-modal-confirm:disabled,
+.btn-modal-cancel:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+/* --- System-Wide Animations --- */
+@keyframes toast-slide-in {
+	from {
+		opacity: 0;
+		transform: translateX(30px) scale(0.96);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(0) scale(1);
+	}
+}
+
+@keyframes toast-fade-out {
+	from {
+		opacity: 1;
+		transform: translateX(0) scale(1);
+	}
+	to {
+		opacity: 0;
+		transform: translateX(30px) scale(0.96);
+	}
+}
+
+@keyframes toast-progress {
+	from {
+		transform: scaleX(1);
+	}
+	to {
+		transform: scaleX(0);
+	}
+}
+
+@keyframes modal-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes modal-scale-in {
+	from {
+		opacity: 0;
+		transform: scale(0.94) translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
 }

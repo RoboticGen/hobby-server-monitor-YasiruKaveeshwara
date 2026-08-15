@@ -45,6 +45,7 @@ a static Astro build that talks to this API over CORS with cookies.
   - [11. Metrics pipeline and retention](#11-metrics-pipeline-and-retention)
     - [Collection](#collection)
     - [Retention](#retention)
+      - [How a bucket is reduced](#how-a-bucket-is-reduced)
     - [Serving](#serving)
   - [12. Error handling conventions](#12-error-handling-conventions)
   - [13. Security decisions](#13-security-decisions)
@@ -263,13 +264,14 @@ account could ever be created.
 
 ### Optional
 
-| Variable                     | Default | Purpose                                                     |
-| ---------------------------- | ------- | ----------------------------------------------------------- |
-| `LXD_CERT_PATH`              | `""`    | Client cert for a remote HTTPS LXD endpoint                 |
-| `LXD_KEY_PATH`               | `""`    | Client key. Both must be set to switch off unix-socket mode |
-| `COLLECTOR_INTERVAL_SECONDS` | `10`    | Seconds between collection cycles                           |
-| `SESSION_COOKIE_SECURE`      | `false` | Set `true` in production (requires HTTPS)                   |
-| `PORT`                       | `8000`  | Port the dev server binds                                   |
+| Variable                        | Default | Purpose                                                               |
+| ------------------------------- | ------- | --------------------------------------------------------------------- |
+| `LXD_CERT_PATH`                 | `""`    | Client cert for a remote HTTPS LXD endpoint                           |
+| `LXD_KEY_PATH`                  | `""`    | Client key. Both must be set to switch off unix-socket mode           |
+| `COLLECTOR_INTERVAL_SECONDS`    | `5`     | Seconds between collection cycles (default: 5s)                       |
+| `ACCESS_TOKEN_LIFETIME_MINUTES` | `30`    | Access token lifetime in minutes before re-authentication is required |
+| `SESSION_COOKIE_SECURE`         | `false` | Set `true` in production (requires HTTPS)                             |
+| `PORT`                          | `8000`  | Port the dev server binds                                             |
 
 **Precedence.** `load_dotenv()` is called _without_ `override`, so a real
 environment variable always beats the `.env` file. A systemd unit using
@@ -294,7 +296,7 @@ python -m backend.app
 
 This uses Python's built-in `wsgiref.simple_server`, which is single-threaded
 and intended for local iteration only.
-
+s
 ### API (production)
 
 ```bash
@@ -353,7 +355,7 @@ _admin_ = admin role only.
 | POST   | `/api/auth/logout`                     | public | Deletes the server-side session row, clears both cookies                                                        |
 | GET    | `/api/containers`                      | auth   | Admin: all active containers. User: only assigned ones. Each row enriched with live `lxd_status` / `lxd_config` |
 | POST   | `/api/containers`                      | admin  | Create a container in LXD and record it. 201                                                                    |
-| GET    | `/api/containers/{id}`                 | access | The raw DB row. **403, not 404**, when a non-admin is not assigned                                              |
+| GET    | `/api/containers/{id}`                 | access | Container record enriched with live LXD state / details. **403, not 404**, when a non-admin is not assigned     |
 | PATCH  | `/api/containers/{id}`                 | admin  | `{"action": …}` **xor** `{"limits": {…}}`                                                                       |
 | DELETE | `/api/containers/{id}`                 | admin  | Delete from LXD, then soft-delete the row                                                                       |
 | GET    | `/api/lxd/options`                     | admin  | Host images, networks, storage pools. Degrades with `stale`                                                     |
@@ -364,6 +366,7 @@ _admin_ = admin role only.
 | DELETE | `/api/users/{uid}/containers/{cid}`    | admin  | Revoke access (soft, `active=0`)                                                                                |
 | GET    | `/api/metrics/latest?container={id}`   | access | Newest raw sample, or `{"point": null}`                                                                         |
 | GET    | `/api/containers/{id}/history?window=` | access | Pre-downsampled series for `1h`\|`24h`\|`7d`                                                                    |
+| GET    | `/api/metrics/recent?container={id}`   | access | Last N raw samples (default 60, up to 720) for immediate graph pre-seeding                                      |
 | POST   | `/api/containers/{id}/exec`            | access | Run one command; returns `{exit_code, stdout, stderr}`                                                          |
 | GET    | `/api/accounting`                      | admin  | Host capacity, total allocation, per-user allocation vs quota                                                   |
 
@@ -508,9 +511,12 @@ Fields written per point (all floats):
 | `pid_count`    | Process count                                                                      |
 
 `cpu_usage_ns` being a monotonic counter matters to consumers: turning it into
-a percentage requires differencing two consecutive samples, which the averaged
-`5m`/`1h` buckets cannot support. Gauges like `ram_used_mb` are meaningful at
-every resolution.
+a percentage requires differencing two consecutive samples. The rollup is built
+around that — counters keep the last reading in each bucket rather than being
+averaged, so the difference between two `5m` or `1h` points is still exactly
+what the counter advanced between them. Gauges like `ram_used_mb` are averaged
+and meaningful at every resolution. See **Retention** below for the full
+per-field classification.
 
 ---
 
@@ -520,8 +526,12 @@ every resolution.
 
 ```text
 browser ──▶ GET /api/auth/google/login
-                └─▶ 302 to Google consent
-Google  ──▶ GET /api/auth/google/callback?code=…
+                ├─ generate_oauth_state()          ← random per attempt
+                ├─ Set-Cookie: oauth_state (httpOnly, Lax, 10 min)
+                └─▶ 302 to Google consent, ?state=<same value>
+Google  ──▶ GET /api/auth/google/callback?code=…&state=…
+                ├─ _verify_state(req)              ← 400 unless the echoed
+                │                                    state matches the cookie
                 ├─ exchange_code_for_tokens(code)
                 ├─ verify_and_decode_id_token(id_token)   ← the only place an
                 │                                            email is trusted
@@ -530,6 +540,25 @@ Google  ──▶ GET /api/auth/google/callback?code=…
                 ├─ INSERT INTO sessions (hash only)
                 └─▶ 302 to FRONTEND_ORIGIN with both cookies set
 ```
+
+**Login CSRF.** The `state` check is the first thing the callback does, and it
+runs before the code is exchanged. Without it the callback accepts an
+authorization code from anyone: an attacker starts their own sign-in, stops at
+the callback holding an unredeemed code, and gets a victim to load that URL —
+the victim's browser ends up holding a session for the _attacker's_ account,
+with nothing on screen looking wrong. An attacker can put anything in the query
+string but cannot write an `httpOnly` cookie on our origin, so the two halves
+cannot be made to agree. Verifying first also means a forged callback never
+reaches Google, so it cannot be used to burn authorization codes or outbound
+requests.
+
+`SameSite=Lax` on that cookie is required rather than a compromise: the
+callback arrives as a top-level cross-site navigation from
+`accounts.google.com`, which is exactly the case Lax permits and `Strict`
+withholds. A `Strict` state cookie would be absent at the callback and every
+legitimate sign-in would fail verification. The cookie is cleared once
+consumed, making each value single-use.
+See `backend/tests/integration/test_login_csrf.py`.
 
 **Admin bootstrap.** Only the address in `ADMIN_BOOTSTRAP_EMAIL` is
 auto-created as an admin on first sign-in. Every other unknown email is
@@ -543,16 +572,22 @@ are still valid, because status is re-read from the database on the callback.
 
 ### Tokens and cookies
 
-|                    | Access token                            | Refresh token                       |
-| ------------------ | --------------------------------------- | ----------------------------------- |
-| Format             | JWT, HS256, `{user_id, role, exp, iat}` | Opaque, `secrets.token_urlsafe(32)` |
-| Lifetime           | 15 minutes                              | 7 days                              |
-| Cookie             | `access_token`, `max_age=900`           | `refresh_token`, `max_age=604800`   |
-| Stored server-side | No                                      | Yes — SHA-256 hash only             |
+|                    | Access token                                                 | Refresh token                       |
+| ------------------ | ------------------------------------------------------------ | ----------------------------------- |
+| Format             | JWT, HS256, `{user_id, role, exp, iat}`                      | Opaque, `secrets.token_urlsafe(32)` |
+| Lifetime           | 30 minutes (default, set by `ACCESS_TOKEN_LIFETIME_MINUTES`) | 7 days                              |
+| Cookie             | `access_token`, `max_age=1800` (default)                     | `refresh_token`, `max_age=604800`   |
+| Stored server-side | No                                                           | Yes — SHA-256 hash only             |
 
 Both cookies are `httpOnly` (JavaScript cannot read them, so XSS cannot
 exfiltrate them), `SameSite=Lax`, `path=/`, and `Secure` when
 `SESSION_COOKIE_SECURE=true`.
+
+A third cookie, `oauth_state`, carries the same attributes but exists only
+between the login redirect and the callback (`max_age=600`). It holds no
+identity and grants no access — it is a nonce, and the callback deletes it on
+use. It is `httpOnly` for the same reason as the others: a value JavaScript
+could read is a value an XSS on our origin could forge a matching callback for.
 
 Because the frontend is served from a different origin in development, browser
 fetches must send `credentials: "include"`.
@@ -671,8 +706,8 @@ LXD ──10s──▶ collector ──▶ TinyFlux(raw) ──▶ /api/metrics/
                               │                /api/containers/{id}/history
                         hourly retention
                               ▼
-                    raw >24h  →  5m averages
-                    5m  >7d   →  1h averages
+                    raw >24h  →  5m buckets
+                    5m  >7d   →  1h buckets
                     any >90d  →  deleted
 ```
 
@@ -696,22 +731,58 @@ which is harmless.
 
 Per container, three steps:
 
-1. `raw` points older than **24h** → grouped into 5-minute buckets, averaged,
+1. `raw` points older than **24h** → grouped into 5-minute buckets, reduced,
    written as `5m`, originals deleted.
-2. `5m` points older than **7d** → grouped into 1-hour buckets, averaged,
+2. `5m` points older than **7d** → grouped into 1-hour buckets, reduced,
    written as `1h`, originals deleted.
 3. Anything older than **90d** → deleted outright, any resolution.
 
-Averaging keeps field names, so a `5m` point has the same shape as a `raw` one.
-Each container is wrapped in its own try/except so one failure never stops the
-rest.
+A rolled-up point keeps the same field names as a `raw` one, so a `5m` point has
+the same shape. Each container is wrapped in its own try/except so one failure
+never stops the rest.
+
+#### How a bucket is reduced
+
+Not every field can be averaged. `_reduce_fields` dispatches on what the field
+means:
+
+| Kind                              | Fields                                         | Reduction            |
+| --------------------------------- | ---------------------------------------------- | -------------------- |
+| Gauge — instantaneous reading     | `ram_used_mb`, `disk_used_mb`, `pid_count`     | mean                 |
+| Counter — monotonic running total | `cpu_usage_ns`, `net_rx_bytes`, `net_tx_bytes` | last value in bucket |
+| High-water mark                   | `ram_peak_mb`                                  | max                  |
+
+The counters are read as **rates** by every consumer — the frontend subtracts
+consecutive points and divides by elapsed time. Keeping each bucket's final
+reading makes that subtraction exact regardless of how the traffic was shaped
+inside the bucket, and the stored value is still a total the counter really
+reached. Averaging a counter yields a number it held only in passing, and
+reconstructs the right rate _only_ if the counter advanced uniformly across the
+bucket — so a burst gets reported at part of its true height with the remainder
+smeared into the next bucket. `ram_peak_mb` takes the max because a mean of
+peaks is lower than every peak it summarises.
+
+Last value rather than `max` matters only on a **counter reset** (a container
+restart zeroes LXD's counters): last value keeps the drop visible so the
+frontend recognises it and rebaselines, whereas `max` would report the pre-reset
+high and invent traffic in a bucket that saw none.
+
+Two supporting details. Points are sorted by timestamp before reduction, because
+retention writes back-dated points and the CSV is not chronological — "last
+reading" has to mean latest time, not last element. And a field missing from a
+point is skipped rather than counted as `0.0`, so one missed collection does not
+halve a gauge or look like a counter reset.
+
+Adding a metric field to `get_container_state()` without classifying it fails
+`test_every_collected_field_is_classified`, which checks the classification
+against the real function rather than a copied list.
 
 ### Serving
 
 Both metrics endpoints read **TinyFlux only and never call LXD**. Two
 consequences that motivated the rule:
 
-- Dashboard traffic — however many tabs are open, polling every 10 seconds —
+- Dashboard traffic — however many tabs are open, polling every 5 seconds —
   adds zero load to the LXD daemon. Only the collector polls LXD, on its fixed
   timer.
 - The endpoints keep serving last-known data while LXD is slow or down.
@@ -725,7 +796,7 @@ raw points on the fly:
 | `24h`          | 24 hours | `5m`            |
 | `7d`           | 7 days   | `1h`            |
 
-So a 24-hour chart transfers ~288 points, not the ~8,640 raw samples that
+So a 24-hour chart transfers ~288 points, not the ~17,280 raw samples that
 window contains. An unrecognised `window` is a 400.
 
 `GET /api/metrics/latest` returns `{"container_id": …, "point": null}` rather
@@ -871,9 +942,11 @@ import.
 | `test_quota.py`                                                                                     | unit        | Allocation sums, per-resource messages, 0 = unlimited                                                                                                                                                         |
 | `test_retention.py`                                                                                 | unit        | Three-tier rollup with an injected clock                                                                                                                                                                      |
 | `test_users.py`, `test_assignments.py`, `test_metrics.py`, `test_terminal.py`, `test_accounting.py` | unit        | Per-resource behaviour                                                                                                                                                                                        |
-| `test_auth_required.py`                                                                             | unit        | Hand-maintained protected-route list                                                                                                                                                                          |
+| `test_auth_required.py`                                                                             | unit        | Hand-maintained protected-route list; OAuth URL construction and `state` generation properties                                                                                                                |
 | `integration/test_route_coverage.py`                                                                | integration | **Walks Falcon's router** — every registered route is discovered, not declared, and must 401 unless it is in the four-entry `PUBLIC` set. JWT tampering, `alg=none`, expired and cross-signed tokens rejected |
 | `integration/test_lifecycle.py`                                                                     | integration | One ordered story: invite → grant → create → start → metrics → limit change → exec → revoke → delete → audit                                                                                                  |
+| `integration/test_login_csrf.py`                                                                    | integration | The OAuth `state` binding: forged, missing, empty, mismatched and replayed callbacks are refused **before** Google is contacted; a genuine round-trip still signs in                                          |
+| `integration/test_refresh.py`                                                                       | integration | Refresh-token redemption and the four ways it must refuse (absent, forged, expired, revoked account)                                                                                                          |
 | `integration/test_security.py`                                                                      | integration | Tenant isolation, privilege boundaries, SQL and command injection, audit integrity                                                                                                                            |
 | `integration/test_resilience.py`                                                                    | integration | Per-endpoint behaviour during a simulated LXD outage; malformed input                                                                                                                                         |
 | `integration/test_pipeline.py`                                                                      | integration | LXD → collector → TinyFlux → retention → HTTP, with an injected clock                                                                                                                                         |
@@ -914,10 +987,7 @@ pin exists to catch.
 
 ### Recorded results
 
-`docs/BACKEND-TEST-REPORT.md` (2026-08-11) records the full-suite run as
-**289 passed, 4 skipped, 1 xfailed, 0 failed** in ~3s, stable across repeated
-runs, from 228 test functions expanding to 294 collected cases. That report also
-documents the seven defects the integration phase found and closed.
+The backend test suite executes with **378 passed, 4 skipped, 1 xfailed, 0 failed** across 383 collected items in ~3.9s. All seven integration defects identified during development remain resolved, and the one expected TinyFlux 1.2.0 library characterisation xfail remains documented and pinned. The post-mortems for those seven defects are in this section rather than a separate report, so they stay in the repository alongside the code they describe.
 
 ---
 
@@ -947,21 +1017,55 @@ Production checklist:
 - [ ] The service account can reach the LXD socket
 - [ ] `python -m backend.db.init_db` has been run once
 
-> The `deploy/` and `scripts/` directories at the repository root are currently
-> empty — the systemd units and helper scripts are the deployment phase's
-> deliverable and have not landed yet. The commands above are what those units
-> will wrap.
+The production deployment files are provided in the repository:
+
+- **API Service Unit:** [`deploy/hsm-api.service`](../deploy/hsm-api.service)
+- **Collector Service Unit:** [`deploy/hsm-collector.service`](../deploy/hsm-collector.service)
+- **Deployment Guide:** [`deploy/notes.md`](../deploy/notes.md) (step-by-step service account creation, file permissions, systemctl enable/start)
+- **Resource Footprint Script:** [`scripts/measure_footprint.sh`](../scripts/measure_footprint.sh) (idle RSS/CPU profiling)
 
 ---
 
 ## 16. Known limitations
 
-**`limit_disk_gb` is recorded but never enforced.** The column is stored,
-counted toward quotas, and reported by `/api/accounting`, but no LXD device
-size is ever set from it. Selecting a storage pool sets `devices.root.pool`
-without a `size` key, so the root disk is unbounded. Enforcing it is a
-behaviour change, deliberately not bundled into the step that added pool
-selection.
+**`limit_disk_gb` is an allocation ledger, not an enforced quota.** The column
+is validated, counted against `quota_disk_gb` when a container is created or
+granted, and reported by `/api/accounting` — so it correctly prevents an admin
+from _over-committing_ disk on paper. What it does not do is bound the root
+filesystem: `create_container` builds `lxd_limits` from `limits.memory` and
+`limits.cpu` only, and selecting a storage pool sets `devices.root.pool`
+without a `size` key. A container can therefore fill the host disk while
+sitting inside its nominal 10GB allocation.
+
+Adding the `size` key is not the fix it appears to be, because whether LXD
+honours it depends on the pool's storage driver. Measured on this host, whose
+only pool uses the `dir` driver:
+
+```console
+$ lxc config device override hsm-probe root size=2GB
+Device root overridden for hsm-probe
+$ lxc config device show hsm-probe
+root:
+  path: /
+  pool: default
+  size: 2GB      # <-- recorded
+  type: disk
+$ lxc exec hsm-probe -- df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdd       1007G   14G  943G   2% /   # <-- not enforced
+```
+
+`dir` accepts the key silently and ignores it — no error, no warning. Setting
+it unconditionally would be worse than the present gap: `lxc config` and the
+dashboard would both display a 2GB quota that does not exist, turning a visible
+limitation into a false guarantee. Real enforcement needs a size-capable driver
+(`btrfs`, `zfs`, `lvm`, or `ceph` — which support quotas via subvolume limits,
+refquota, or block-device sizing), so the honest implementation reads
+`driver` from `list_storage_pools()`, applies `size` only on a pool that can
+honour it, and refuses the request otherwise rather than pretending. That is a
+behaviour change requiring a driver-capability matrix and a migration path for
+containers already created without a size, so it is documented here rather than
+half-implemented.
 
 **`GET /api/lxd/options` lists only locally cached images.** Remote aliases
 like `ubuntu:22.04` resolve through _remotes_, a client-side CLI concept the
@@ -970,15 +1074,19 @@ empty list even though thousands of images are installable — which is why the
 creation form keeps its image field free-text and treats this list as
 suggestions rather than the valid set.
 
-**`GET /api/containers/{id}` returns the raw DB row.** Unlike the list
-endpoint, it does not run `_enrich_with_lxd_state()`, so the response has no
-`lxd_status` / `lxd_config`. Consumers needing live state use the list endpoint
-or fall back to `"Unknown"`.
+**`GET /api/containers/{id}` degrades gracefully when LXD is down.** When LXD is available, the endpoint merges the database record with live LXD details (`lxd_status`, `lxd_architecture`, `lxd_ip_addresses`, `lxd_image`, `lxd_process_count`). If LXD is unreachable, it falls back to the database record with `lxd_status: "Unknown"` without throwing a 500 error.
 
-**No refresh-token rotation endpoint.** Refresh tokens are minted, hashed, and
-stored, and the row is deleted on logout, but there is no
-`POST /api/auth/refresh` that trades one for a new access token. When the
-15-minute access token expires the user signs in again.
+**Refresh tokens are not rotated on use.** `POST /api/auth/refresh` redeems the
+refresh cookie for a new access token, re-reading role and status from the
+database so a demotion or revocation applies at the next refresh rather than
+persisting inside an already-signed token. The refresh token itself is
+deliberately reused rather than rotated: rotation makes a stolen token
+single-use, but without replay detection two dashboard tabs refreshing at once
+each present the same valid token and the loser of the race is logged out by
+its own sibling. Doing it safely needs a used-token grace window plus
+family-wide revocation, which is more machinery than this project warrants. The
+token stays server-side revocable through the `sessions` row, and that
+revocability is the property being bought.
 
 **SQLite write serialization is a single-host ceiling.** `BEGIN IMMEDIATE`
 serializes quota-critical writes with a 5-second busy timeout. That is correct

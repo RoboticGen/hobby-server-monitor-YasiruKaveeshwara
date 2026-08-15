@@ -78,6 +78,7 @@ import "../../styles/global.css";
       import { createRoot } from "react-dom/client";
       import { apiFetch, ApiError } from "../../lib/api";
       import { syncSession } from "../../lib/session";
+      import { toast } from "../../lib/alerts";
       import AccountingOverview from "../../components/AccountingOverview";
       import MetricTile from "../../components/MetricTile";
       import CreateContainerForm from "../../components/CreateContainerForm";
@@ -113,8 +114,10 @@ import "../../styles/global.css";
 
       function fail(message: string): void {
         loading.hidden = true;
-        (document.getElementById("error-text") as HTMLElement).textContent = message;
+        (document.getElementById("error-text") as HTMLElement).textContent =
+          message;
         errorEl.hidden = false;
+        toast.error(message, "Fleet Manager");
       }
 
       function renderTiles(containers: ContainerRecord[]): void {

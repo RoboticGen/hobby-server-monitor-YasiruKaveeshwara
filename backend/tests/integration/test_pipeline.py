@@ -59,22 +59,32 @@ def pipeline_env(isolated_db, isolated_tsdb, fake_lxd):
     """An admin, a user, and two containers with different LXD state."""
     client = testing.TestClient(create_app())
     admin_id, admin_headers = make_user("pipe-admin@example.com", role="admin")
-    user_id, user_headers = make_user("pipe-user@example.com",
-                                      ram=8192, cpu=8.0, disk=80)
+    user_id, user_headers = make_user(
+        "pipe-user@example.com", ram=8192, cpu=8.0, disk=80
+    )
 
     ids = {}
     for name in ["pipe-one", "pipe-two"]:
         fake_lxd.add(name)
         cid = repo.create_container_record(
-            lxd_name=name, image="ubuntu:22.04", created_by=admin_id,
-            limit_ram_mb=1024, limit_cpu=1.0, limit_disk_gb=10,
+            lxd_name=name,
+            image="ubuntu:22.04",
+            created_by=admin_id,
+            limit_ram_mb=1024,
+            limit_cpu=1.0,
+            limit_disk_gb=10,
         )
         repo.assign_container(user_id, cid)
         ids[name] = cid
 
     return {
-        "client": client, "admin": admin_headers, "user": user_headers,
-        "ids": ids, "lxd": fake_lxd, "user_id": user_id, "admin_id": admin_id,
+        "client": client,
+        "admin": admin_headers,
+        "user": user_headers,
+        "ids": ids,
+        "lxd": fake_lxd,
+        "user_id": user_id,
+        "admin_id": admin_id,
     }
 
 
@@ -97,7 +107,8 @@ def _run_one_collector_pass(monkeypatch=None):
     own = monkeypatch is None
     mp = pytest.MonkeyPatch() if own else monkeypatch
     mp.setattr(
-        collector_module.time, "sleep",
+        collector_module.time,
+        "sleep",
         lambda _s: (_ for _ in ()).throw(_StopLoop()),
     )
     mp.setattr(collector_module, "run_retention_pass", lambda now=None: None)
@@ -112,9 +123,7 @@ def _run_one_collector_pass(monkeypatch=None):
 class TestCollectorToStore:
     """What the collector writes must match what LXD reported."""
 
-    def test_collector_converts_lxd_units_correctly(
-        self, pipeline_env, monkeypatch
-    ):
+    def test_collector_converts_lxd_units_correctly(self, pipeline_env, monkeypatch):
         """Bytes from LXD become MB in TinyFlux, without rounding drift.
 
         The fake reports 268,435,456 bytes of RAM — exactly 256 MiB. A point
@@ -122,7 +131,7 @@ class TestCollectorToStore:
         would mean it used decimal MB instead of binary.
         """
         container = pipeline_env["lxd"].containers._store["pipe-one"]
-        container.state_obj.memory.usage = 268_435_456.0     # 256 MiB
+        container.state_obj.memory.usage = 268_435_456.0  # 256 MiB
         container.state_obj.disk["root"].usage = 2_147_483_648.0  # 2 GiB
         container.state_obj.processes = 42
 
@@ -140,36 +149,37 @@ class TestCollectorToStore:
     ):
         """Every active container gets a point in a single pass."""
         for cid in pipeline_env["ids"].values():
-            assert store.get_latest_point(cid) is not None, (
-                "a container assigned and active got no metrics point"
-            )
+            assert (
+                store.get_latest_point(cid) is not None
+            ), "a container assigned and active got no metrics point"
 
     def test_collector_tags_points_as_raw(self, pipeline_env):
         """New points must be tagged raw, or retention will never roll them up."""
         point = store.get_latest_point(pipeline_env["ids"]["pipe-one"])
         assert point["resolution"] == "raw"
 
-    def test_collector_skips_soft_deleted_containers(
-        self, pipeline_env, monkeypatch
-    ):
+    def test_collector_skips_soft_deleted_containers(self, pipeline_env, monkeypatch):
         """A deleted container must not keep generating metrics.
 
         It is gone from LXD, so polling it would log an error every interval
         forever — noise that would mask real failures.
         """
         cid = repo.create_container_record(
-            lxd_name="pipe-ghost", image="ubuntu:22.04",
+            lxd_name="pipe-ghost",
+            image="ubuntu:22.04",
             created_by=pipeline_env["admin_id"],
-            limit_ram_mb=256, limit_cpu=0.5, limit_disk_gb=2,
+            limit_ram_mb=256,
+            limit_cpu=0.5,
+            limit_disk_gb=2,
         )
         repo.soft_delete_container(cid)
         # Deliberately never added to the fake daemon.
 
         _run_one_collector_pass(monkeypatch)
 
-        assert store.get_latest_point(cid) is None, (
-            "the collector wrote metrics for a soft-deleted container"
-        )
+        assert (
+            store.get_latest_point(cid) is None
+        ), "the collector wrote metrics for a soft-deleted container"
 
     def test_one_broken_container_does_not_stop_the_others(
         self, pipeline_env, monkeypatch
@@ -218,9 +228,12 @@ class TestRetentionThroughTheApi:
 
         pipeline_env["lxd"].add("pipe-aged")
         cid = repo.create_container_record(
-            lxd_name="pipe-aged", image="ubuntu:22.04",
+            lxd_name="pipe-aged",
+            image="ubuntu:22.04",
             created_by=pipeline_env["admin_id"],
-            limit_ram_mb=1024, limit_cpu=1.0, limit_disk_gb=10,
+            limit_ram_mb=1024,
+            limit_cpu=1.0,
+            limit_disk_gb=10,
         )
         repo.assign_container(pipeline_env["user_id"], cid)
 
@@ -231,8 +244,12 @@ class TestRetentionThroughTheApi:
         for i in range(360):  # 360 * 30s = 3 hours
             store.write_point(
                 container_id=cid,
-                fields={"cpu_pct": 50.0, "ram_used_mb": 512.0,
-                        "disk_used_gb": 5.0, "pid_count": 10.0},
+                fields={
+                    "cpu_pct": 50.0,
+                    "ram_used_mb": 512.0,
+                    "disk_used_gb": 5.0,
+                    "pid_count": 10.0,
+                },
                 resolution="raw",
                 timestamp=base + timedelta(seconds=30 * i),
             )
@@ -260,9 +277,9 @@ class TestRetentionThroughTheApi:
         old_end = NOW - timedelta(hours=24)
 
         raw_left = store.query_range(cid, old_start, old_end, resolution="raw")
-        assert raw_left == [], (
-            f"{len(raw_left)} raw points survived past the 24h cutoff"
-        )
+        assert (
+            raw_left == []
+        ), f"{len(raw_left)} raw points survived past the 24h cutoff"
 
         rolled = _search_by_tag(cid, "5m")
         assert len(rolled) == aged_container["expected_buckets"], (
@@ -317,9 +334,7 @@ class TestRetentionThroughTheApi:
 
         run_retention_pass(now=NOW)
 
-        recent = store.query_range(
-            cid, NOW - timedelta(hours=1), NOW, resolution="raw"
-        )
+        recent = store.query_range(cid, NOW - timedelta(hours=1), NOW, resolution="raw")
         assert any(p["cpu_pct"] == 12.0 for p in recent), (
             "a 10-minute-old raw point was rolled up; the 1h chart would be "
             "missing its most recent data"
@@ -343,13 +358,11 @@ class TestRetentionThroughTheApi:
         window_start = NOW - timedelta(days=9)
         window_end = NOW - timedelta(days=7)
 
-        assert store.query_range(
-            cid, window_start, window_end, resolution="5m"
-        ) == [], "5m points survived past the 7-day cutoff"
+        assert (
+            store.query_range(cid, window_start, window_end, resolution="5m") == []
+        ), "5m points survived past the 7-day cutoff"
 
-        hourly = store.query_range(
-            cid, window_start, window_end, resolution="1h"
-        )
+        hourly = store.query_range(cid, window_start, window_end, resolution="1h")
         assert len(hourly) == 2, f"expected 2 hourly buckets, got {len(hourly)}"
         assert hourly[0]["cpu_pct"] == pytest.approx(30.0)
 
@@ -367,20 +380,23 @@ class TestRetentionThroughTheApi:
 
         for resolution in ["raw", "5m", "1h"]:
             store.write_point(
-                container_id=cid, fields={"cpu_pct": 99.0},
-                resolution=resolution, timestamp=ancient,
+                container_id=cid,
+                fields={"cpu_pct": 99.0},
+                resolution=resolution,
+                timestamp=ancient,
             )
 
         run_retention_pass(now=NOW)
 
         for resolution in ["raw", "5m", "1h"]:
             survivors = store.query_range(
-                cid, ancient - timedelta(days=1), ancient + timedelta(days=1),
+                cid,
+                ancient - timedelta(days=1),
+                ancient + timedelta(days=1),
                 resolution=resolution,
             )
             assert survivors == [], (
-                f"{len(survivors)} {resolution} points survived the 90-day "
-                f"prune"
+                f"{len(survivors)} {resolution} points survived the 90-day " f"prune"
             )
 
     def test_history_endpoint_serves_the_rolled_up_data(
@@ -394,7 +410,8 @@ class TestRetentionThroughTheApi:
         """
         result = pipeline_env["client"].simulate_get(
             f"/api/containers/{aged_container['id']}/history",
-            params={"window": "24h"}, headers=pipeline_env["user"],
+            params={"window": "24h"},
+            headers=pipeline_env["user"],
         )
         assert result.status_code == 200
         assert result.json["resolution"] == "5m"
@@ -410,27 +427,129 @@ class TestRetentionThroughTheApi:
         window_start = NOW - timedelta(hours=30)
         window_end = NOW - timedelta(hours=24)
 
-        before = store.query_range(cid, window_start, window_end,
-                                   resolution="5m")
+        before = store.query_range(cid, window_start, window_end, resolution="5m")
         run_retention_pass(now=NOW)
-        after = store.query_range(cid, window_start, window_end,
-                                  resolution="5m")
+        after = store.query_range(cid, window_start, window_end, resolution="5m")
 
         assert len(after) == len(before), (
             f"a second retention pass changed the 5m point count from "
             f"{len(before)} to {len(after)}"
         )
         if before:
-            assert after[0]["cpu_pct"] == pytest.approx(before[0]["cpu_pct"]), (
-                "re-running retention re-averaged its own output"
+            assert after[0]["cpu_pct"] == pytest.approx(
+                before[0]["cpu_pct"]
+            ), "re-running retention re-averaged its own output"
+
+    def test_counter_rates_survive_the_rollup_and_the_api(self, pipeline_env):
+        """A counter rolled up and read back must still chart correctly.
+
+        The unit suite proves _reduce_fields keeps the right value in isolation.
+        This proves the store round-trip does not undo it: the points are
+        written back-dated, rolled up by the real retention pass (which also
+        deletes the originals and invalidates TinyFlux's time index), and read
+        back through store.query_range — the same call the history endpoint
+        makes. The rate is then computed the way ContainerResourceGraphs.tsx
+        computes it, by subtracting consecutive points.
+
+        Read through query_range rather than over HTTP because the endpoint
+        anchors its window to the real clock (now-24h .. now) while retention
+        runs against the injected NOW, which is already days in the past. No
+        data can satisfy both, so an HTTP read here would return an empty
+        series no matter what the rollup did. The endpoint's own behaviour —
+        that a 24h request resolves to the 5m tier — is covered by
+        test_history_endpoint_serves_the_rolled_up_data above.
+
+        The ramp is deliberately uneven. A flat or perfectly linear counter
+        reduces the same way under averaging as under last-value, so a test
+        built on one cannot tell the two apart.
+        """
+        pipeline_env["lxd"].add("pipe-counter")
+        cid = repo.create_container_record(
+            lxd_name="pipe-counter",
+            image="ubuntu:22.04",
+            created_by=pipeline_env["admin_id"],
+            limit_ram_mb=512,
+            limit_cpu=1.0,
+            limit_disk_gb=5,
+        )
+        repo.assign_container(pipeline_env["user_id"], cid)
+
+        # 30 minutes of 30-second samples, aged past the 24h cutoff and
+        # aligned to a 5-minute boundary so the buckets are whole.
+        base = (NOW - timedelta(hours=26)).replace(minute=0, second=0, microsecond=0)
+        # Bytes received per 30s sample: idle, a burst mid-bucket, then steady.
+        # Cumulative totals are what LXD actually reports.
+        per_sample = ([0.0] * 7 + [120_000.0] + [0.0] * 2) + [3_000.0] * 50
+        total = 0.0
+        for i, delta in enumerate(per_sample):
+            total += delta
+            store.write_point(
+                container_id=cid,
+                fields={"net_rx_bytes": total, "ram_used_mb": 256.0},
+                resolution="raw",
+                timestamp=base + timedelta(seconds=30 * i),
             )
+        expected_final = total
+
+        run_retention_pass(now=NOW)
+
+        points = store.query_range(
+            cid,
+            base - timedelta(minutes=5),
+            base + timedelta(hours=1),
+            resolution="5m",
+        )
+        points.sort(key=lambda p: p["time"])
+        assert (
+            len(points) >= 4
+        ), f"expected several 5m buckets over 30 minutes, got {len(points)}"
+
+        # The last bucket must carry the true running total, not a midpoint.
+        # An average would land below it by roughly half a bucket of traffic.
+        assert points[-1]["net_rx_bytes"] == pytest.approx(expected_final), (
+            f"the final rolled-up total is {points[-1]['net_rx_bytes']}, "
+            f"but the counter actually reached {expected_final}"
+        )
+
+        # Every consecutive pair must yield a non-negative rate. The frontend
+        # discards negative deltas as counter resets, so a reduction that let
+        # one appear would silently blank a segment of the chart.
+        for previous, current in zip(points, points[1:]):
+            elapsed = (
+                datetime.fromisoformat(current["time"])
+                - datetime.fromisoformat(previous["time"])
+            ).total_seconds()
+            assert elapsed > 0
+            rate = (current["net_rx_bytes"] - previous["net_rx_bytes"]) / elapsed
+            assert rate >= 0, (
+                f"a rolled-up counter went backwards between "
+                f"{previous['time']} and {current['time']}, which the chart "
+                f"renders as a gap"
+            )
+
+        # Traffic must be conserved across the series: the first bucket's total
+        # plus everything the deltas account for equals what the counter really
+        # reached. Averaging loses the tail of the final bucket, so this catches
+        # a reduction that merely looks plausible point by point.
+        spanned = points[-1]["net_rx_bytes"] - points[0]["net_rx_bytes"]
+        assert spanned == pytest.approx(expected_final - points[0]["net_rx_bytes"]), (
+            f"the rolled-up series accounts for {spanned} bytes of traffic, "
+            f"but the counter advanced to {expected_final}"
+        )
+
+        # The gauge alongside it is still averaged, so the two reductions
+        # coexist in one point rather than one winning for the whole dict.
+        assert points[-1]["ram_used_mb"] == pytest.approx(256.0)
 
     def test_retention_survives_a_container_with_no_data(self, pipeline_env):
         """A container that never produced metrics must not break the pass."""
         cid = repo.create_container_record(
-            lxd_name="pipe-empty", image="ubuntu:22.04",
+            lxd_name="pipe-empty",
+            image="ubuntu:22.04",
             created_by=pipeline_env["admin_id"],
-            limit_ram_mb=256, limit_cpu=0.5, limit_disk_gb=2,
+            limit_ram_mb=256,
+            limit_cpu=0.5,
+            limit_disk_gb=2,
         )
         run_retention_pass(now=NOW)  # must not raise
         assert store.get_latest_point(cid) is None
@@ -470,16 +589,20 @@ class TestMetricsIsolation:
         """
         pipeline_env["lxd"].add("pipe-doomed")
         cid = repo.create_container_record(
-            lxd_name="pipe-doomed", image="ubuntu:22.04",
+            lxd_name="pipe-doomed",
+            image="ubuntu:22.04",
             created_by=pipeline_env["admin_id"],
-            limit_ram_mb=256, limit_cpu=0.5, limit_disk_gb=2,
+            limit_ram_mb=256,
+            limit_cpu=0.5,
+            limit_disk_gb=2,
         )
         store.write_point(cid, {"cpu_pct": 7.0}, timestamp=NOW)
         repo.soft_delete_container(cid)
 
         result = pipeline_env["client"].simulate_get(
             f"/api/containers/{cid}/history",
-            params={"window": "24h"}, headers=pipeline_env["admin"],
+            params={"window": "24h"},
+            headers=pipeline_env["admin"],
         )
         assert result.status_code == 200, (
             "metric history vanished with the container; soft-delete is "
@@ -494,12 +617,16 @@ class TestMetricsIsolation:
         answers 200 with point=None.
         """
         cid = repo.create_container_record(
-            lxd_name="pipe-fresh", image="ubuntu:22.04",
+            lxd_name="pipe-fresh",
+            image="ubuntu:22.04",
             created_by=pipeline_env["admin_id"],
-            limit_ram_mb=256, limit_cpu=0.5, limit_disk_gb=2,
+            limit_ram_mb=256,
+            limit_cpu=0.5,
+            limit_disk_gb=2,
         )
         result = pipeline_env["client"].simulate_get(
-            "/api/metrics/latest", params={"container": cid},
+            "/api/metrics/latest",
+            params={"container": cid},
             headers=pipeline_env["admin"],
         )
         assert result.status_code == 200
@@ -543,12 +670,17 @@ class TestTinyFluxIndexBehaviour:
 
         # One recent point, then one back-dated point: the exact shape
         # _downsample_and_prune creates when it writes a rollup bucket.
-        db.insert(Point(time=NOW, tags={"c": "c1", "r": "raw"},
-                        fields={"v": 1.0}))
-        db.insert(Point(time=NOW - timedelta(hours=30),
-                        tags={"c": "c1", "r": "raw"}, fields={"v": 2.0}))
-        db.remove((tag.c == "c1") & (tag.r == "raw")
-                  & (time_q < NOW - timedelta(hours=24)))
+        db.insert(Point(time=NOW, tags={"c": "c1", "r": "raw"}, fields={"v": 1.0}))
+        db.insert(
+            Point(
+                time=NOW - timedelta(hours=30),
+                tags={"c": "c1", "r": "raw"},
+                fields={"v": 2.0},
+            )
+        )
+        db.remove(
+            (tag.c == "c1") & (tag.r == "raw") & (time_q < NOW - timedelta(hours=24))
+        )
 
         window = (time_q >= NOW - timedelta(hours=1)) & (time_q <= NOW)
         query = (tag.c == "c1") & (tag.r == "raw") & window

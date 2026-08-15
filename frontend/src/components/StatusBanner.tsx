@@ -12,8 +12,9 @@
  * twenty minutes ago as current, and only notice something was wrong when a
  * start/stop returned a 503 for no apparent reason.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "../lib/api";
+import { toast } from "../lib/alerts";
 
 /** Response body of GET /health (backend/resources/health.py). */
 interface HealthResponse {
@@ -26,8 +27,8 @@ interface HealthResponse {
 /**
  * How often to re-check health, in milliseconds.
  *
- * 30 seconds, per Step 23.1. Deliberately three times slower than MetricTile's
- * 10-second poll, and the reason is the cost of the call rather than the
+ * 30 seconds, per Step 23.1. Deliberately much slower than MetricTile's
+ * poll, and the reason is the cost of the call rather than the
  * freshness of the answer: /metrics/latest reads a stored sample and never
  * touches LXD (decision 7.5), but /health probes LXD on every request via
  * check_lxd_reachable(). So this interval is real load on the daemon, once per
@@ -51,34 +52,39 @@ const POLL_INTERVAL_MS = 30_000;
 type Health = "ok" | "degraded" | "unreachable";
 
 export default function StatusBanner() {
-	// Starts at "ok" so nothing appears while the first check is in flight.
-	// A banner that flashes on every page load is a banner people learn to
-	// scroll past, which defeats the point of having one.
 	const [health, setHealth] = useState<Health>("ok");
+	const previousHealth = useRef<Health>("ok");
 
 	useEffect(() => {
-		// Guards a response that arrives after this component unmounted (a page
-		// navigation mid-request) from setting state on a dead component.
 		let cancelled = false;
 
 		async function check(): Promise<void> {
 			try {
-				// Note the path: /health sits at the root, NOT under /api — it is a
-				// public endpoint that deliberately requires no session, so this
-				// banner keeps working on the login page and while signed out.
 				const result = await apiFetch<HealthResponse>("/health");
 				if (cancelled) return;
 
-				// Reads lxd_reachable rather than comparing status === "degraded":
-				// the boolean is the fact, the string is a label derived from it.
-				setHealth(result.lxd_reachable ? "ok" : "degraded");
+				const nextHealth: Health = result.lxd_reachable ? "ok" : "degraded";
+
+				if (previousHealth.current !== nextHealth) {
+					if (nextHealth === "degraded") {
+						toast.warning(
+							"LXD daemon is not responding. System operating in degraded mode with cached metrics.",
+							"Degraded Mode",
+						);
+					} else if (previousHealth.current !== "ok" && nextHealth === "ok") {
+						toast.success("LXD daemon connection re-established. System operating normally.", "System Restored");
+					}
+					previousHealth.current = nextHealth;
+				}
+
+				setHealth(nextHealth);
 			} catch {
 				if (cancelled) return;
-				// Any throw means the request did not come back — a dead API, a
-				// restart, DNS, or the network. One transient failure will show the
-				// banner for up to one interval and then clear itself, which is the
-				// right trade: a brief false alarm is recoverable, a silent outage
-				// is not.
+				const nextHealth: Health = "unreachable";
+				if (previousHealth.current !== nextHealth) {
+					toast.error("Cannot reach the backend API server. Telemetry paused.", "Server Unreachable");
+					previousHealth.current = nextHealth;
+				}
 				setHealth("unreachable");
 			}
 		}

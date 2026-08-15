@@ -7,6 +7,7 @@
  */
 import { useEffect, useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast } from "../lib/alerts";
 
 interface HostResources {
 	cpu_cores: number;
@@ -242,6 +243,8 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 		if (autostart) body.autostart = true;
 		if (description.trim()) body.description = description.trim();
 
+		toast.info(`Provisioning unprivileged container '${name.trim()}'…`);
+
 		try {
 			const created = await apiFetch<CreatedContainer>("/api/containers", {
 				method: "POST",
@@ -249,13 +252,17 @@ export default function CreateContainerForm({ onCreated }: CreateContainerFormPr
 				body: JSON.stringify(body),
 			});
 
-			setSuccess(`Container '${created.name}' initialized and created successfully.`);
+			const successMsg = `Container '${created.name}' initialized and created successfully.`;
+			setSuccess(successMsg);
+			toast.success(successMsg, "Container Created");
 			setName("");
 			setDescription("");
 			setReloadKey((key) => key + 1);
 			onCreated?.();
 		} catch (err) {
-			setError(err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.");
+			const errorMsg = err instanceof ApiError ? `${err.status}: ${err.message}` : "Could not reach the server.";
+			setError(errorMsg);
+			toast.error(err, "Container Creation Failed");
 		} finally {
 			setSubmitting(false);
 		}

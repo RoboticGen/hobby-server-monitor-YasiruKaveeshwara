@@ -53,12 +53,20 @@ class TokenExchangeError(RuntimeError):
         self.status = status
 
 
-def build_google_auth_url() -> str:
+def build_google_auth_url(state: str) -> str:
     """Construct the Google OAuth2 authorization URL.
 
     Returns the full URL the user's browser should be redirected to.
     After the user authenticates with Google, Google redirects back to
     our configured callback URL with an authorization code.
+
+    `state` is an opaque random value that Google echoes back unmodified on
+    the callback. The caller stores the same value in a cookie and compares
+    the two, which is what ties a callback to a sign-in this browser actually
+    started — without it, an attacker can feed a victim a callback URL
+    carrying their own authorization code and silently log the victim into
+    the attacker's account (login CSRF). It is required, not optional,
+    because a default would make the protection easy to omit by accident.
     """
     params = {
         "client_id": config.google_client_id,
@@ -67,6 +75,7 @@ def build_google_auth_url() -> str:
         "scope": _SCOPES,
         "access_type": "offline",  # requests a refresh token from Google
         "prompt": "consent",  # ensures we always get a fresh consent
+        "state": state,
     }
     return f"{_GOOGLE_AUTH_URL}?{urlencode(params)}"
 

@@ -22,12 +22,11 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from backend.collector import sampler
 from backend.collector.retention import run_retention_pass
 from backend.config import config
 from backend.db import repo
-from backend.lxd import client as lxd_client
 from backend.lxd.client import LXDUnavailableError
-from backend.tsdb import store as tsdb
 
 # Module-level logger so every log line from this process is prefixed
 # consistently, making it easy to filter in system logs.
@@ -42,15 +41,15 @@ def _collect_one(container: dict) -> None:
     requirement. If LXD is unreachable for this container, raises
     LXDUnavailableError, which the caller catches and logs as a warning.
 
+    Delegates to backend.collector.sampler so the loop and the API's
+    immediate-sample path write points through exactly one code path; the
+    container_id/resolution tagging that retention and /history depend on is
+    defined there once.
+
     Args:
         container: A container dict from repo.list_active_containers().
     """
-    state = lxd_client.get_container_state(container["lxd_name"])
-    tsdb.write_point(
-        container_id=container["id"],
-        fields=state,
-        resolution="raw",
-    )
+    sampler.sample_container(container)
 
 
 def run_collector_loop() -> None:
@@ -117,7 +116,8 @@ def run_collector_loop() -> None:
         now = datetime.now(tz=timezone.utc)
         if (
             _last_retention_run is None
-            or (now - _last_retention_run).total_seconds() >= _retention_interval_seconds
+            or (now - _last_retention_run).total_seconds()
+            >= _retention_interval_seconds
         ):
             try:
                 log.info("Running hourly retention pass")

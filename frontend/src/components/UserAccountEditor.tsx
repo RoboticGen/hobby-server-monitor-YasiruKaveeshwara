@@ -5,6 +5,7 @@
  */
 import { useState, type SyntheticEvent } from "react";
 import { apiFetch, ApiError } from "../lib/api";
+import { toast, showConfirm } from "../lib/alerts";
 
 type UserRole = "admin" | "user";
 type UserStatus = "invited" | "active" | "revoked";
@@ -57,6 +58,7 @@ export default function UserAccountEditor({ userId, email, role, status, onSaved
 		if (Object.keys(patch).length === 0) {
 			setSaving(false);
 			setSaved("No changes to save.");
+			toast.info("No changes to save.");
 			return;
 		}
 
@@ -72,19 +74,28 @@ export default function UserAccountEditor({ userId, email, role, status, onSaved
 			setBaselineRole(updated.role);
 			setBaselineStatus(updated.status);
 			onSaved?.();
-			setSaved(nextStatus === "revoked" ? `${email} access revoked.` : "Account privileges updated.");
+			const msg = nextStatus === "revoked" ? `${email} access revoked.` : "Account privileges updated.";
+			setSaved(msg);
+			toast.success(msg, "User Updated");
 		} catch (err) {
-			setError(err instanceof ApiError ? err.message : "Could not reach the server to save the user.");
+			const errMsg = err instanceof ApiError ? err.message : "Could not reach the server to save the user.";
+			setError(errMsg);
+			toast.error(err, "Failed to Update User");
 		} finally {
 			setSaving(false);
 		}
 	}
 
 	async function handleRevoke(): Promise<void> {
-		if (!window.confirm(`Revoke ${email}? They will no longer be able to sign in.`)) {
-			return;
-		}
-		await submitPatch(undefined, "revoked");
+		await showConfirm({
+			title: "Revoke User Access",
+			message: `Revoke access for ${email}? They will immediately lose access and active sessions will be terminated.`,
+			confirmText: "Revoke Access",
+			cancelText: "Cancel",
+			isDanger: true,
+			iconType: "danger",
+			onConfirm: () => submitPatch(undefined, "revoked"),
+		});
 	}
 
 	return (

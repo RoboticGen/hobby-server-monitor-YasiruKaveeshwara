@@ -82,9 +82,7 @@ class ContainerExecResource:
 
         # Run the command as an argument array (decision 7.7's safe path).
         try:
-            exit_code, stdout, stderr = lxd_client.execute_command(
-                lxd_name, command
-            )
+            exit_code, stdout, stderr = lxd_client.execute_command(lxd_name, command)
         except Exception as exc:
             # A failed exec (e.g. container not running, LXD unreachable) is
             # surfaced as a clean error rather than a raw stack trace.
